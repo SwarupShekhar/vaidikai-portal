@@ -1,0 +1,27 @@
+# Secrets
+.env
+.env.*
+
+# Client data
+clients.json
+upload_log.json
+export.json
+dummy_processed.json
+
+# Audio / temp test files
+*.m4a
+*.wav
+*.mp3
+test.txt
+scratch/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# OS
+.DS_Store

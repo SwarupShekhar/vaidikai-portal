@@ -1,0 +1,384 @@
+/* Vaicore Styles */
+:root {
+    --bg-color: #0B0B0D;
+    --accent-color: #C5E84D;
+    --white: #FFFFFF;
+    --grey: #8A8A9A;
+    --card-bg: rgba(255, 255, 255, 0.05);
+    --error: #ff6b6b;
+    --success: #51cf66;
+}
+
+body {
+    font-family: Calibri, sans-serif;
+    background-color: var(--bg-color);
+    color: var(--white);
+    margin: 0;
+    padding: 0;
+    min-height: 100vh;
+}
+
+.container {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 20px;
+}
+
+.card {
+    background-color: var(--card-bg);
+    border-radius: 8px;
+    padding: 30px;
+    margin-bottom: 30px;
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+}
+
+.logo {
+    color: var(--accent-color);
+    font-size: 3rem;
+    text-align: center;
+    margin-bottom: 10px;
+}
+
+.tagline {
+    text-align: center;
+    font-size: 1.2rem;
+    color: var(--grey);
+    margin-bottom: 5px;
+}
+
+.tagline-sub {
+    text-align: center;
+    font-size: 1rem;
+    color: var(--grey);
+    margin-bottom: 30px;
+}
+
+header {
+    background-color: var(--card-bg);
+    padding: 20px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+header h1 {
+    color: var(--accent-color);
+    margin: 0;
+}
+
+.btn {
+    background-color: var(--accent-color);
+    color: var(--bg-color);
+    border: none;
+    padding: 12px 24px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 1rem;
+    font-weight: bold;
+    transition: background-color 0.3s;
+}
+
+.btn:hover {
+    background-color: #b8e03e;
+}
+
+.btn-secondary {
+    background-color: var(--grey);
+    color: var(--white);
+}
+
+.btn-secondary:hover {
+    background-color: #777;
+}
+
+.btn-small {
+    padding: 8px 16px;
+    font-size: 0.9rem;
+}
+
+form {
+    display: flex;
+    flex-direction: column;
+    gap: 15px;
+}
+
+label {
+    font-weight: bold;
+}
+
+input[type="text"], input[type="file"] {
+    padding: 12px;
+    border: 1px solid var(--grey);
+    border-radius: 4px;
+    background-color: var(--bg-color);
+    color: var(--white);
+}
+
+input[type="file"] {
+    display: none;
+}
+
+.drop-area {
+    border: 2px dashed var(--accent-color);
+    border-radius: 4px;
+    padding: 40px;
+    text-align: center;
+    cursor: pointer;
+    transition: background-color 0.3s;
+}
+
+.drop-area.drag-over {
+    background-color: rgba(197, 232, 77, 0.1);
+}
+
+.progress-bar {
+    width: 100%;
+    height: 10px;
+    background-color: var(--grey);
+    border-radius: 5px;
+    overflow: hidden;
+    margin-top: 10px;
+}
+
+.progress-fill {
+    height: 100%;
+    background-color: var(--accent-color);
+    width: 0%;
+    transition: width 0.3s;
+}
+
+#message, #upload-message {
+    margin-top: 15px;
+    padding: 10px;
+    border-radius: 4px;
+    text-align: center;
+}
+
+.error {
+    background-color: var(--error);
+    color: var(--white);
+}
+
+.success {
+    background-color: var(--success);
+    color: var(--white);
+}
+
+table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 20px;
+}
+
+th, td {
+    padding: 12px;
+    text-align: left;
+    border-bottom: 1px solid var(--grey);
+}
+
+th {
+    background-color: rgba(255, 255, 255, 0.1);
+    font-weight: bold;
+}
+
+@media (max-width: 768px) {
+    .container {
+        padding: 10px;
+    }
+    
+    .card {
+        padding: 20px;
+    }
+    
+    header {
+        flex-direction: column;
+        gap: 10px;
+    }
+    
+    header h1 {
+        font-size: 1.5rem;
+    }
+}
+
+/* Status Badges */
+.status-badge {
+    padding: 6px 12px;
+    border-radius: 50px;
+    font-size: 0.85rem;
+    font-weight: bold;
+    display: inline-block;
+}
+
+.status-uploaded {
+    background-color: rgba(255, 255, 255, 0.1);
+    color: var(--white);
+}
+
+.status-transcribing {
+    background-color: rgba(197, 232, 77, 0.15);
+    color: var(--accent-color);
+    border: 1px solid var(--accent-color);
+    animation: pulse 2s infinite;
+}
+
+.status-reviewing {
+    background-color: rgba(81, 207, 102, 0.15);
+    color: var(--success);
+    border: 1px solid var(--success);
+    animation: pulse 2s infinite;
+}
+
+.status-completed {
+    background-color: var(--success);
+    color: var(--white);
+}
+
+.status-failed {
+    background-color: var(--error);
+    color: var(--white);
+}
+
+@keyframes pulse {
+    0% { opacity: 1; }
+    50% { opacity: 0.5; }
+    100% { opacity: 1; }
+}
+
+.download-btn {
+    background-color: var(--accent-color);
+    color: var(--bg-color);
+    text-decoration: none;
+    padding: 6px 12px;
+    border-radius: 4px;
+    font-weight: bold;
+    font-size: 0.85rem;
+}
+
+.download-btn:hover {
+    background-color: #b8e03e;
+}
+
+/* Mini Progress Bar for Table */
+.progress-container {
+    margin-top: 8px;
+    width: 120px;
+}
+
+.progress-text {
+    font-size: 0.75rem;
+    color: var(--grey);
+    margin-bottom: 4px;
+    display: block;
+}
+
+.mini-progress {
+    width: 100%;
+    height: 6px;
+    background-color: rgba(255, 255, 255, 0.1);
+    border-radius: 3px;
+    overflow: hidden;
+}
+
+.mini-progress-fill {
+    height: 100%;
+    background-color: var(--accent-color);
+    width: 0%;
+    transition: width 0.5s ease-in-out;
+}
+
+/* Modal Styles */
+.modal {
+    display: none;
+    position: fixed;
+    z-index: 1000;
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 100%;
+    background-color: rgba(0, 0, 0, 0.8);
+    backdrop-filter: blur(5px);
+}
+
+.modal-content {
+    background-color: var(--bg-color);
+    margin: 5% auto;
+    padding: 0;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    width: 70%;
+    max-width: 900px;
+    border-radius: 12px;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+    max-height: 80vh;
+    display: flex;
+    flex-direction: column;
+}
+
+.modal-header {
+    padding: 20px 30px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.modal-header h3 {
+    margin: 0;
+    color: var(--accent-color);
+}
+
+.close-modal {
+    color: var(--grey);
+    font-size: 28px;
+    font-weight: bold;
+    cursor: pointer;
+    transition: color 0.3s;
+}
+
+.close-modal:hover {
+    color: var(--white);
+}
+
+.transcript-body {
+    padding: 30px;
+    overflow-y: auto;
+    flex-grow: 1;
+}
+
+.transcript-segment {
+    margin-bottom: 20px;
+    display: flex;
+    gap: 20px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    padding-bottom: 15px;
+}
+
+.segment-meta {
+    min-width: 120px;
+    color: var(--grey);
+    font-size: 0.85rem;
+}
+
+.segment-text {
+    line-height: 1.6;
+    color: rgba(255, 255, 255, 0.9);
+}
+
+.timestamp {
+    color: var(--accent-color);
+    font-family: monospace;
+}
+
+/* Language Badges */
+.lang-badge {
+    padding: 4px 10px;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    font-weight: bold;
+    background-color: rgba(255, 255, 255, 0.1);
+    color: var(--grey);
+}
+
+.lang-detected {
+    background-color: rgba(197, 232, 77, 0.15);
+    color: var(--accent-color);
+}

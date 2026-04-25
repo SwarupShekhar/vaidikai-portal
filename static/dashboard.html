@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Vaicore Data Platform</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <header>
+        <h1>Vaicore — <span id="client-name"></span> Portal</h1>
+        <button id="logout-btn" class="btn-secondary btn">Logout</button>
+    </header>
+
+    <div class="container">
+        <!-- Upload Section -->
+        <div class="card">
+            <h2>Upload Data Files</h2>
+            <p>Supported formats: Audio (MP3, WAV, M4A) | Documents (PDF, DOCX) | Images (JPG, PNG) | Data (CSV, JSON)</p>
+            <form id="upload-form">
+                <div class="drop-area" id="drop-area">
+                    <p>Drag and drop files here or click to select</p>
+                    <input type="file" id="file-input" name="file" required>
+                </div>
+                <button type="submit" class="btn">Upload File</button>
+            </form>
+            <div id="upload-progress" class="progress-bar" style="display: none;">
+                <div class="progress-fill"></div>
+            </div>
+            <div id="upload-message"></div>
+        </div>
+
+        <!-- My Uploads Section -->
+        <div class="card">
+            <h2>My Uploads</h2>
+            <table id="uploads-table">
+                <thead>
+                    <tr>
+                        <th>File Name</th>
+                        <th>Type</th>
+                        <th>Size</th>
+                        <th>Uploaded On</th>
+                        <th>Language</th>
+                        <th>Status</th>
+                    </tr>
+                </thead>
+                <tbody></tbody>
+            </table>
+        </div>
+
+        <!-- Downloads Section -->
+        <div class="card">
+            <h2>Ready to Download</h2>
+            <table id="downloads-table">
+                <thead>
+                    <tr>
+                        <th>File Name</th>
+                        <th>Completed On</th>
+                        <th>Action</th>
+                    </tr>
+                </thead>
+                <tbody></tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- Transcript Modal -->
+    <div id="transcript-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Transcript Preview: <span id="modal-filename"></span></h3>
+                <span class="close-modal">&times;</span>
+            </div>
+            <div id="transcript-container" class="transcript-body">
+                <!-- Segments will be injected here -->
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let clientCode = null;
+
+        async function init() {
+            try {
+                const res = await fetch('/api/me');
+                if (!res.ok) {
+                    window.location.href = '/';
+                    return;
+                }
+                const me = await res.json();
+                clientCode = me.client_code;
+                document.getElementById('client-name').textContent = me.client_name;
+                loadFiles();
+            } catch (e) {
+                window.location.href = '/';
+            }
+        }
+
+        document.getElementById('logout-btn').addEventListener('click', async function() {
+            await fetch('/api/logout', { method: 'POST' });
+            window.location.href = '/';
+        });
+
+        // Drag and drop
+        const dropArea = document.getElementById('drop-area');
+        const fileInput = document.getElementById('file-input');
+
+        dropArea.addEventListener('click', () => fileInput.click());
+        dropArea.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            dropArea.classList.add('drag-over');
+        });
+        dropArea.addEventListener('dragleave', () => dropArea.classList.remove('drag-over'));
+        dropArea.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dropArea.classList.remove('drag-over');
+            fileInput.files = e.dataTransfer.files;
+        });
+
+        fileInput.addEventListener('change', function() {
+            const file = this.files[0];
+            if (file) {
+                dropArea.querySelector('p').textContent = `Selected: ${file.name}`;
+            }
+        });
+
+        // Upload form
+        document.getElementById('upload-form').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            const file = fileInput.files[0];
+            if (!file) return;
+
+            const formData = new FormData();
+            formData.append('client_code', clientCode);
+            formData.append('file', file);
+
+            const messageDiv = document.getElementById('upload-message');
+            const progressBar = document.getElementById('upload-progress');
+            const progressFill = progressBar.querySelector('.progress-fill');
+
+            messageDiv.textContent = 'Uploading...';
+            messageDiv.className = '';
+            progressBar.style.display = 'block';
+            progressFill.style.width = '50%';
+
+            try {
+                const response = await fetch('/api/upload', {
+                    method: 'POST',
+                    body: formData
+                });
+                const data = await response.json();
+                if (data.success) {
+                    messageDiv.textContent = `Uploaded: ${data.file_name}`;
+                    messageDiv.className = 'success';
+                    fileInput.value = '';
+                    dropArea.querySelector('p').textContent = 'Drag and drop files here or click to select';
+                    loadFiles();
+                } else {
+                    messageDiv.textContent = data.message || 'Upload failed';
+                    messageDiv.className = 'error';
+                    progressFill.style.width = '0%';
+                }
+            } catch (error) {
+                messageDiv.textContent = 'Network error. Please try again.';
+                messageDiv.className = 'error';
+                progressFill.style.width = '0%';
+            } finally {
+                if (messageDiv.className === 'success') {
+                    progressFill.style.width = '100%';
+                    setTimeout(() => progressBar.style.display = 'none', 1000);
+                } else {
+                    progressBar.style.display = 'none';
+                }
+            }
+        });
+
+        // Load files
+        async function loadFiles() {
+            try {
+                const response = await fetch(`/api/files/${clientCode}`);
+                const data = await response.json();
+
+                // Uploads table
+                const uploadsTbody = document.querySelector('#uploads-table tbody');
+                uploadsTbody.innerHTML = '';
+                let needsPolling = false;
+
+                for (const file of data.intake) {
+                    const row = document.createElement('tr');
+                    const fileType = file.name.split('.').pop().toUpperCase();
+                    const sizeMB = (file.size / (1024 * 1024)).toFixed(2) + ' MB';
+                    const uploadedOn = new Date(file.uploaded_on).toLocaleDateString();
+                    const language = file.language || "Detecting...";
+                    const langClass = language !== "Detecting..." ? "lang-detected" : "";
+
+                    let statusClass = 'status-uploaded';
+                    if (file.status.includes('Transcribing')) statusClass = 'status-transcribing';
+                    if (file.status.includes('Reviewing') || file.status === 'In Review') statusClass = 'status-reviewing';
+                    if (file.status === 'Completed') statusClass = 'status-completed';
+                    if (file.status.includes('Failed')) statusClass = 'status-failed';
+
+                    if (['Transcribing', 'Reviewing', 'Uploaded', 'In Review'].includes(file.status)) {
+                        needsPolling = true;
+                    }
+
+                    let progressHtml = '';
+                    if (file.status === 'In Review') {
+                        try {
+                            const statusResponse = await fetch(`/api/status/${clientCode}/${file.name}`);
+                            const statusData = await statusResponse.json();
+                            if (statusData.total_segments > 0) {
+                                progressHtml = `
+                                    <div class="progress-container">
+                                        <span class="progress-text">${statusData.completed_annotations}/${statusData.total_segments} labeled</span>
+                                        <div class="mini-progress">
+                                            <div class="mini-progress-fill" style="width: ${statusData.completion_percentage}%"></div>
+                                        </div>
+                                    </div>
+                                `;
+                                if (statusData.completion_percentage === 100) {
+                                    file.status = 'Review Finished';
+                                    statusClass = 'status-completed';
+                                    progressHtml = `
+                                        <div class="progress-container">
+                                            <button class="btn-small" onclick="finalizeExport('${file.name}')">Finalize & Deliver</button>
+                                        </div>
+                                    `;
+                                }
+                            }
+                        } catch (e) {
+                            console.error("Error fetching status for", file.name, e);
+                        }
+                    }
+
+                    const transcriptBtn = file.transcript_available ?
+                        `<button class="btn-small btn-secondary" style="margin-top:5px" onclick="viewTranscript('${file.full_name}', '${file.name}')">View Transcript</button>` : '';
+
+                    row.innerHTML = `
+                        <td>${file.name}</td>
+                        <td>${fileType}</td>
+                        <td>${sizeMB}</td>
+                        <td>${uploadedOn}</td>
+                        <td><span class="lang-badge ${langClass}">${language}</span></td>
+                        <td>
+                            <div style="display: flex; flex-direction: column; align-items: flex-start; gap: 5px;">
+                                <span class="status-badge ${statusClass}">${file.status}</span>
+                                ${progressHtml}
+                                ${transcriptBtn}
+                            </div>
+                        </td>
+                    `;
+                    uploadsTbody.appendChild(row);
+                }
+
+                if (needsPolling) {
+                    if (!window.pollInterval) {
+                        window.pollInterval = setInterval(loadFiles, 10000);
+                        console.log("Polling started...");
+                    }
+                } else if (window.pollInterval) {
+                    clearInterval(window.pollInterval);
+                    window.pollInterval = null;
+                    console.log("Polling stopped.");
+                }
+
+                // Downloads table
+                const downloadsTbody = document.querySelector('#downloads-table tbody');
+                downloadsTbody.innerHTML = '';
+                data.delivery.forEach(file => {
+                    const row = document.createElement('tr');
+                    const completedOn = new Date(file.completed_on).toLocaleDateString();
+                    row.innerHTML = `
+                        <td>${file.name}</td>
+                        <td>${completedOn}</td>
+                        <td><button class="btn-small" onclick="downloadFile('${file.name}')">Download</button></td>
+                    `;
+                    downloadsTbody.appendChild(row);
+                });
+            } catch (error) {
+                console.error('Error loading files:', error);
+            }
+        }
+
+        // Finalize Export
+        async function finalizeExport(filename) {
+            if (!confirm(`Are you sure you want to finalize and deliver results for ${filename}?`)) return;
+
+            const btn = event.target;
+            const originalText = btn.textContent;
+            btn.textContent = 'Processing...';
+            btn.disabled = true;
+
+            try {
+                const response = await fetch(`/api/export/${clientCode}/${filename}`, {
+                    method: 'POST'
+                });
+                const data = await response.json();
+                if (data.success) {
+                    alert(data.message);
+                    loadFiles();
+                } else {
+                    alert('Export failed: ' + data.message);
+                    btn.textContent = originalText;
+                    btn.disabled = false;
+                }
+            } catch (error) {
+                alert('Network error. Please try again.');
+                btn.textContent = originalText;
+                btn.disabled = false;
+            }
+        }
+
+        // View Transcript
+        async function viewTranscript(fullName, originalName) {
+            const modal = document.getElementById('transcript-modal');
+            const container = document.getElementById('transcript-container');
+            const fileNameSpan = document.getElementById('modal-filename');
+
+            fileNameSpan.textContent = originalName;
+            container.innerHTML = '<p style="text-align:center">Loading transcript...</p>';
+            modal.style.display = 'block';
+
+            try {
+                const response = await fetch(`/api/transcript/${clientCode}/${fullName}`);
+                if (!response.ok) throw new Error('Failed to fetch transcript');
+
+                const data = await response.json();
+
+                if (!data.segments || data.segments.length === 0) {
+                    container.innerHTML = '<p style="text-align:center">No transcript segments available.</p>';
+                    return;
+                }
+
+                container.innerHTML = '';
+                data.segments.forEach((seg, index) => {
+                    const segDiv = document.createElement('div');
+                    segDiv.className = 'transcript-segment';
+
+                    const startTime = formatTime(seg.start);
+                    const endTime = formatTime(seg.end);
+                    const speaker = seg.speaker || 'Unknown';
+
+                    segDiv.innerHTML = `
+                        <div class="segment-meta">
+                            Segment ${index + 1}<br>
+                            <span class="timestamp">${startTime} - ${endTime}</span><br>
+                            <span class="speaker-tag" style="color:var(--accent-color); font-weight:bold">${speaker}</span>
+                        </div>
+                        <div class="segment-text">${seg.text}</div>
+                    `;
+                    container.appendChild(segDiv);
+                });
+
+            } catch (error) {
+                container.innerHTML = `<p style="text-align:center; color:var(--error)">Error: ${error.message}</p>`;
+            }
+        }
+
+        function formatTime(seconds) {
+            const date = new Date(0);
+            date.setSeconds(seconds);
+            return date.toISOString().substr(11, 8);
+        }
+
+        document.querySelector('.close-modal').onclick = function() {
+            document.getElementById('transcript-modal').style.display = 'none';
+        }
+
+        window.onclick = function(event) {
+            const modal = document.getElementById('transcript-modal');
+            if (event.target == modal) {
+                modal.style.display = 'none';
+            }
+        }
+
+        // Download file
+        async function downloadFile(filename) {
+            try {
+                const response = await fetch(`/api/download/${clientCode}/${filename}`);
+                const data = await response.json();
+                window.open(data.download_url, '_blank');
+            } catch (error) {
+                alert('Download failed. Please try again.');
+            }
+        }
+
+        init();
+    </script>
+</body>
+</html>
