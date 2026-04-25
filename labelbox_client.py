@@ -288,61 +288,67 @@ def push_to_labelbox(
         data_row_ids = [dr.uid for dr in dataset.data_rows()]
         project.create_batch(name=dataset_name, data_rows=data_row_ids)
         
-        # STEP 4: Prepare Predictions (Manual NDJSON for maximum control over Audio Temporal format)
+        # STEP 4: Build ONE prediction per data row, grouping all frames by speaker.
+        # Labelbox TemporalNDJSON format: answer is an array where each element
+        # contains ALL frames for that speaker label, with nested transcript text entries.
         predictions = []
         speaker_feat = ontology_map["classifications"].get("speaker")
-        
+
         if speaker_feat:
+            # Collect frames + transcripts grouped by speaker label
+            speaker_data = {}  # {label: {"frames": [...], "transcripts": [...]}}
+
             for segment in segments:
                 start_ms = int(segment.get('start_time', 0) * 1000)
                 end_ms = int(segment.get('end_time', 0) * 1000)
                 speaker_type = segment.get('speaker', 'Unknown')
                 transcript_text = segment.get('transcript', '')
-                
-                # Map Speaker 1/2 or Agent/Customer to the exact Ontology Labels
+
                 speaker_lower = speaker_type.lower()
-                if "speaker 1" in speaker_lower or "agent" in speaker_lower:
-                    choice_label = "Agent"
-                else:
-                    choice_label = "Customer"
-                
-                # Build the Prediction object using the 'frames' structure required for Audio Spans
-                pred = {
+                label = "Agent" if ("speaker 1" in speaker_lower or "agent" in speaker_lower) else "Customer"
+
+                if label not in speaker_data:
+                    speaker_data[label] = {"frames": [], "transcripts": []}
+
+                frame = {"start": start_ms, "end": end_ms}
+                speaker_data[label]["frames"].append(frame)
+                speaker_data[label]["transcripts"].append({
+                    "value": transcript_text,
+                    "frames": [frame]
+                })
+
+            # Build answer array — one entry per speaker with all their frames
+            answer = []
+            for label, data in speaker_data.items():
+                answer.append({
+                    "name": label,
+                    "frames": data["frames"],
+                    "classifications": [
+                        {
+                            "name": "transcript",
+                            "answer": data["transcripts"]
+                        }
+                    ]
+                })
+
+            if answer:
+                predictions.append({
                     "uuid": str(uuid.uuid4()),
                     "dataRow": {"globalKey": global_key},
                     "name": "speaker",
-                    "frames": [{"start": start_ms, "end": end_ms}],
-                    "answer": {
-                        "name": choice_label,
-                        "classifications": [
-                            {
-                                "name": "transcript",
-                                "answer": transcript_text
-                            }
-                        ]
-                    }
-                }
-                predictions.append(pred)
+                    "answer": answer
+                })
 
-        # STEP 5: Upload as Labels (Immediate visibility for all users)
+        # STEP 5: Upload as MAL pre-labels (editable by labelers)
         if predictions:
-            print(f"Uploading {len(predictions)} labels via LabelImport...")
-            try:
-                from labelbox.schema.annotation_import import LabelImport
-                upload_job = LabelImport.create_from_objects(
-                    lb_client, project_id, f"LABELS_{global_key}", predictions
-                )
-                upload_job.wait_till_done()
-                print(f"Label upload complete. Status: {upload_job.state}")
-                if upload_job.errors:
-                    print(f"Label upload errors: {upload_job.errors}")
-            except Exception as le:
-                print(f"LabelImport failed (trying MAL fallback): {le}")
-                upload_job = lb.MALPredictionImport.create_from_objects(
-                    lb_client, project_id, f"MAL_{global_key}", predictions
-                )
-                upload_job.wait_till_done()
-                print(f"MAL fallback upload complete. Status: {upload_job.state}")
+            print(f"Uploading {len(predictions)} MAL prediction(s) ({len(segments)} segments)...")
+            upload_job = lb.MALPredictionImport.create_from_objects(
+                lb_client, project_id, f"MAL_{global_key}", predictions
+            )
+            upload_job.wait_till_done()
+            print(f"MAL upload complete. Status: {upload_job.state}")
+            if upload_job.errors:
+                print(f"MAL upload errors: {upload_job.errors}")
 
         return {
             "status": "success",
