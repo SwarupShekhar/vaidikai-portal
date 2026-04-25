@@ -23,3 +23,9 @@ coverage.xml
 .pytest_cache
 .hypothesis
 *.md
+
+# Tooling / infrastructure (local only)
+.claude/
+.claude-flow/
+.swarm/
+.mcp.json
