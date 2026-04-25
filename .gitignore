@@ -1,27 +1,25 @@
-# Secrets
 .env
-.env.*
-
-# Client data
-clients.json
 upload_log.json
-export.json
-dummy_processed.json
-
-# Audio / temp test files
-*.m4a
-*.wav
-*.mp3
-test.txt
-scratch/
-
-# Python
 __pycache__/
 *.pyc
 *.pyo
-.venv/
+*.pyd
+.Python
+env/
 venv/
-*.egg-info/
-
-# OS
-.DS_Store
+.venv/
+pip-log.txt
+pip-delete-this-directory.txt
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.log
+.git
+.mypy_cache
+.pytest_cache
+.hypothesis
+*.md
