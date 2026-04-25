@@ -341,14 +341,16 @@ def push_to_labelbox(
 
         # STEP 5: Upload as MAL pre-labels (editable by labelers)
         if predictions:
+            import json as _json
             print(f"Uploading {len(predictions)} MAL prediction(s) ({len(segments)} segments)...")
+            print(f"DEBUG prediction sample: {_json.dumps(predictions[0], indent=2, ensure_ascii=False)[:500]}")
             upload_job = lb.MALPredictionImport.create_from_objects(
                 lb_client, project_id, f"MAL_{global_key}", predictions
             )
             upload_job.wait_till_done()
             print(f"MAL upload complete. Status: {upload_job.state}")
             if upload_job.errors:
-                print(f"MAL upload errors: {upload_job.errors}")
+                print(f"MAL upload errors (FULL): {_json.dumps(upload_job.errors, indent=2, default=str)}")
 
         return {
             "status": "success",
