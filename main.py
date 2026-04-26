@@ -15,7 +15,7 @@ import asyncio
 from datetime import datetime, timedelta, date
 from pathlib import Path
 from processor import process_audio
-from labelbox_client import push_to_labelbox
+from labelstudio_client import push_to_labelstudio
 from export_handler import check_annotation_status, export_and_deliver
 from dotenv import load_dotenv
 
@@ -387,13 +387,13 @@ async def get_transcript(client_code: str, full_name: str):
 
 
 @app.get("/api/status/{client_code}/{filename}")
-async def get_labelbox_status(client_code: str, filename: str):
+async def get_annotation_status(client_code: str, filename: str):
     if client_code not in get_valid_client_codes():
         return {"status": "error", "message": "Invalid client code"}
 
-    project_id = os.getenv("LABELBOX_PROJECT_ID")
+    project_id = os.getenv("LABEL_STUDIO_PROJECT_ID")
     if not project_id:
-        return {"status": "error", "message": "LABELBOX_PROJECT_ID not configured"}
+        return {"status": "error", "message": "LABEL_STUDIO_PROJECT_ID not configured"}
 
     status = await asyncio.to_thread(check_annotation_status, client_code, project_id, filename)
     return status
@@ -404,9 +404,9 @@ async def export_results(client_code: str, filename: str):
     if client_code not in get_valid_client_codes():
         return {"status": "error", "message": "Invalid client code"}
 
-    project_id = os.getenv("LABELBOX_PROJECT_ID")
+    project_id = os.getenv("LABEL_STUDIO_PROJECT_ID")
     if not project_id:
-        return {"status": "error", "message": "LABELBOX_PROJECT_ID not configured"}
+        return {"status": "error", "message": "LABEL_STUDIO_PROJECT_ID not configured"}
 
     try:
         result = await asyncio.to_thread(export_and_deliver, client_code, filename, project_id)
@@ -602,18 +602,19 @@ def run_full_pipeline(
             sync_update("Reviewing", language=result.get('language'))
 
             try:
-                lb_result = push_to_labelbox(
+                ls_result = push_to_labelstudio(
                     result['processed_file'],
                     client_code,
                     original_filename,
+                    processed_blob=result.get('processed_blob'),
                 )
-                print(f"Labelbox push result: {lb_result}")
-                if lb_result.get('status') == 'success':
+                print(f"Label Studio push result: {ls_result}")
+                if ls_result.get('status') == 'success':
                     sync_update("In Review")
                 else:
-                    error_detail = lb_result.get('error', 'Unknown error')
-                    print(f"Labelbox push failed: {error_detail}")
-                    sync_update("Failed (Labelbox)", labelbox_error=error_detail)
+                    error_detail = ls_result.get('error', 'Unknown error')
+                    print(f"Label Studio push failed: {error_detail}")
+                    sync_update("Failed (Label Studio)", labelstudio_error=error_detail)
             except Exception as e:
                 print(f"Error pushing to Labelbox: {str(e)}")
                 sync_update("Failed (Labelbox)", labelbox_error=str(e))
@@ -629,14 +630,6 @@ def run_full_pipeline(
             loop.close()
         except Exception:
             pass
-
-
-def _parse_labelbox_external_id(external_id: str):
-    """Parse '[CLIENT001] filename.m4a (timestamp)' → (client_code, filename)."""
-    match = re.match(r'\[([^\]]+)\]\s+(.+?)\s+\(', external_id)
-    if match:
-        return match.group(1), match.group(2)
-    return None, None
 
 
 async def _run_webhook_export(client_code: str, original_filename: str, project_id: str, label_id: str):
@@ -660,14 +653,15 @@ async def _run_webhook_export(client_code: str, original_filename: str, project_
         print(f"Webhook export failed: {e}")
 
 
-@app.post("/webhook/labelbox")
-async def labelbox_webhook(request: Request, background_tasks: BackgroundTasks):
+@app.post("/webhook/labelstudio")
+async def labelstudio_webhook(request: Request, background_tasks: BackgroundTasks):
     body = await request.body()
 
-    webhook_secret = os.getenv("LABELBOX_WEBHOOK_SECRET", "")
+    # Label Studio signs with HMAC-SHA256 in the X-LS-Signature header
+    webhook_secret = os.getenv("LABEL_STUDIO_WEBHOOK_SECRET", "")
     if webhook_secret:
-        signature = request.headers.get("X-Hub-Signature", "")
-        expected = "sha1=" + hmac.new(webhook_secret.encode(), body, hashlib.sha1).hexdigest()
+        signature = request.headers.get("X-LS-Signature", "")
+        expected = hmac.new(webhook_secret.encode(), body, hashlib.sha256).hexdigest()
         if not hmac.compare_digest(signature, expected):
             raise HTTPException(status_code=401, detail="Invalid webhook signature")
 
@@ -676,34 +670,43 @@ async def labelbox_webhook(request: Request, background_tasks: BackgroundTasks):
     except json.JSONDecodeError:
         raise HTTPException(status_code=400, detail="Invalid JSON payload")
 
-    event_type = payload.get("type", "")
-    if event_type not in ("REVIEW_CREATED", "REVIEW_UPDATED"):
-        return {"received": True, "action": "ignored", "event": event_type}
+    action = payload.get("action", "")
 
-    label = payload.get("label", {})
-    review = label.get("review", {})
-    if review.get("score", 0) != 1:
-        return {"received": True, "action": "ignored", "reason": "not approved"}
+    # Trigger export on:
+    # - ANNOTATION_CREATED / ANNOTATION_UPDATED → labeler submitted (no review queue)
+    # - REVIEW_CREATED / REVIEW_UPDATED with accepted=True → reviewer approved
+    annotation = payload.get("annotation", {})
 
-    data_row = payload.get("data_row", {})
-    external_id = data_row.get("external_id", "")
-    label_id = label.get("id", "")
-    project_id = os.getenv("LABELBOX_PROJECT_ID", "")
+    if action in ("REVIEW_CREATED", "REVIEW_UPDATED"):
+        if not annotation.get("accepted", False):
+            return {"received": True, "action": "ignored", "reason": "review not accepted"}
+    elif action in ("ANNOTATION_CREATED", "ANNOTATION_UPDATED"):
+        if annotation.get("was_cancelled", False):
+            return {"received": True, "action": "ignored", "reason": "annotation cancelled"}
+    else:
+        return {"received": True, "action": "ignored", "event": action}
 
-    client_code, original_filename = _parse_labelbox_external_id(external_id)
+    # Task data contains client_code and filename set during push_to_labelstudio
+    task = payload.get("task", {})
+    task_data = task.get("data", {})
+    client_code = task_data.get("client_code", "")
+    original_filename = task_data.get("filename", "")
+    project_id = str(payload.get("project", {}).get("id", os.getenv("LABEL_STUDIO_PROJECT_ID", "")))
+    annotation_id = str(annotation.get("id", ""))
+
     if not client_code or not original_filename:
-        print(f"Could not parse external_id: {external_id!r}")
-        return {"received": True, "action": "ignored", "reason": "unparseable external_id"}
+        print(f"Missing client_code or filename in task data: {task_data!r}")
+        return {"received": True, "action": "ignored", "reason": "missing client_code or filename"}
 
     background_tasks.add_task(
         _run_webhook_export,
         client_code=client_code,
         original_filename=original_filename,
         project_id=project_id,
-        label_id=label_id,
+        label_id=annotation_id,
     )
 
-    print(f"Webhook: review approved for {client_code}/{original_filename}, export queued")
+    print(f"Webhook: {action} for {client_code}/{original_filename}, export queued")
     return {"received": True, "action": "export_queued", "client_code": client_code, "filename": original_filename}
 
 

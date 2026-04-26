@@ -338,21 +338,29 @@ def process_audio(blob_filename: str, client_code: str, language: str = 'hi') ->
             with open(processed_path, 'w', encoding='utf-8') as f:
                 json.dump({"segments": processed_segments, "language": detected_language}, f, indent=2, ensure_ascii=False)
             
-            # STEP 7: Upload and Cleanup
-            processing_blob_client = blob_service_client.get_blob_client(container="processing", blob=f"{client_code}/{transcript_filename}")
-            with open(transcript_path, 'rb') as f:
-                processing_blob_client.upload_blob(f, overwrite=True)
-            
+            # STEP 7: Upload transcript + processed JSON to Azure, cleanup local audio
+            for blob_name, local_path in [
+                (f"{client_code}/{transcript_filename}", transcript_path),
+                (f"{client_code}/{processed_filename}", processed_path),
+            ]:
+                bc = blob_service_client.get_blob_client(container="processing", blob=blob_name)
+                with open(local_path, 'rb') as f:
+                    bc.upload_blob(f, overwrite=True)
+
             if os.path.exists(local_audio_path):
                 os.remove(local_audio_path)
-            
+
             high_conf = sum(1 for s in processed_segments if s['confidence'] >= 65)
             review_req = sum(1 for s in processed_segments if 40 <= s['confidence'] < 65)
-            
+
+            processed_blob = f"{client_code}/{processed_filename}"
+
             return {
                 "status": "success", "segments": len(processed_segments),
                 "high_confidence": high_conf, "review_needed": review_req,
-                "processed_file": str(processed_path), "client_code": client_code,
+                "processed_file": str(processed_path),
+                "processed_blob": processed_blob,
+                "client_code": client_code,
                 "original_filename": pure_filename, "engine": "gpt-4o", "language": detected_language
             }
 

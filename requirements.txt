@@ -5,12 +5,10 @@ azure-storage-blob==12.19.1
 python-dotenv==1.0.1
 python-jose==3.3.0
 aiofiles==23.2.1
-faster-whisper
-torch
-labelbox
+label-studio-sdk
 pandas
 openpyxl
-ffmpeg-python
-ctranslate2
 openai
 aiohttp
+requests
+faster-whisper

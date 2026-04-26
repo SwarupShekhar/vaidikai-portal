@@ -4,6 +4,7 @@
     "client_name": "Demo Client",
     "active": true,
     "created_at": "2026-04-25",
-    "contact_email": "demo@clariva.ai"
+    "contact_email": "demo@clariva.ai",
+    "role_labels": ["Teacher", "Student"]
   }
 }

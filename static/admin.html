@@ -384,9 +384,29 @@
     // ── Copy link ─────────────────────────────────────────
     function copyLink(token, showToast = true) {
         const url = `${location.origin}/access/${token}`;
-        navigator.clipboard.writeText(url).then(() => {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(url).then(() => {
+                if (showToast) toast('Access link copied to clipboard.');
+            }).catch(() => _fallbackCopy(url, showToast));
+        } else {
+            _fallbackCopy(url, showToast);
+        }
+    }
+
+    function _fallbackCopy(text, showToast) {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.cssText = 'position:fixed;top:0;left:0;opacity:0';
+        document.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        try {
+            document.execCommand('copy');
             if (showToast) toast('Access link copied to clipboard.');
-        });
+        } catch {
+            prompt('Copy this link:', text);
+        }
+        document.body.removeChild(ta);
     }
 
     // ── Utilities ─────────────────────────────────────────

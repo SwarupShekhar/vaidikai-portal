@@ -13,80 +13,26 @@ from dotenv import load_dotenv
 load_dotenv()
 
 try:
-    import labelbox as lb
+    from label_studio_sdk import LabelStudio
 except ImportError:
-    print("Labelbox SDK not installed. Install with: pip install labelbox")
+    print("Label Studio SDK not installed. Install with: pip install label-studio-sdk")
     raise
-
-
-def _extract_segments_from_label(label_obj) -> list:
-    """
-    Extract temporal audio annotation segments from a Labelbox label object.
-
-    Returns a list of dicts with keys: start_time, end_time, speaker, transcript.
-    Times are in seconds (converted from Labelbox ms values).
-    """
-    segments = []
-    try:
-        for annotation in label_obj.annotations:
-            # Get annotation name (should be "speaker")
-            ann_name = getattr(annotation, 'name', '')
-            if ann_name.lower() != 'speaker':
-                continue
-
-            # Get time range (Labelbox stores in ms for audio)
-            start_ms = getattr(annotation, 'start', None)
-            end_ms = getattr(annotation, 'end', None)
-            if start_ms is None:
-                # Try frames attribute
-                frames = getattr(annotation, 'frames', [])
-                if frames:
-                    start_ms = frames[0].get('start', 0)
-                    end_ms = frames[0].get('end', 0)
-
-            if start_ms is None:
-                continue
-
-            # Get speaker answer
-            answer = getattr(annotation, 'answer', None)
-            speaker = 'Unknown'
-            transcript = ''
-
-            if answer:
-                speaker = getattr(answer, 'name', '') or (answer.get('name', '') if isinstance(answer, dict) else '')
-                # Extract nested transcript classification
-                sub_cls = getattr(answer, 'classifications', []) or (answer.get('classifications', []) if isinstance(answer, dict) else [])
-                for cls in sub_cls:
-                    cls_name = getattr(cls, 'name', '') or (cls.get('name', '') if isinstance(cls, dict) else '')
-                    if cls_name.lower() == 'transcript':
-                        cls_ans = getattr(cls, 'answer', '') or (cls.get('answer', '') if isinstance(cls, dict) else '')
-                        transcript = str(cls_ans) if cls_ans else ''
-
-            segments.append({
-                'start_time': start_ms / 1000.0,  # ms to seconds
-                'end_time': end_ms / 1000.0,
-                'speaker': speaker,
-                'transcript': transcript,
-            })
-    except Exception as e:
-        print(f"Error extracting segments: {e}")
-    return segments
 
 
 def export_and_deliver(
     client_code: str,
     original_filename: str,
-    labelbox_project_id: str,
+    project_id: str,
     label_id: str = None,
 ) -> Dict[str, Any]:
     """
-    Export completed annotations from Labelbox and deliver to client via Azure Blob.
+    Export completed annotations from Label Studio and deliver to client via Azure Blob.
 
     Args:
         client_code: Client identifier
         original_filename: Original audio filename
-        labelbox_project_id: Labelbox project ID
-        label_id: Optional specific label ID to filter results
+        project_id: Label Studio project ID
+        label_id: Unused — kept for compatibility with main.py call signature
 
     Returns:
         Dict with export results including status, rows_exported, json_filename,
@@ -96,11 +42,14 @@ def export_and_deliver(
         print(f"Starting export and delivery for {client_code}/{original_filename}")
 
         # Get credentials
-        api_key = os.getenv("LABELBOX_API_KEY")
+        ls_url = os.getenv("LABEL_STUDIO_URL")
+        ls_api_key = os.getenv("LABEL_STUDIO_API_KEY")
         connection_string = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
 
-        if not api_key:
-            raise ValueError("LABELBOX_API_KEY not found in environment")
+        if not ls_url:
+            raise ValueError("LABEL_STUDIO_URL not found in environment")
+        if not ls_api_key:
+            raise ValueError("LABEL_STUDIO_API_KEY not found in environment")
         if not connection_string:
             raise ValueError("AZURE_STORAGE_CONNECTION_STRING not found in environment")
 
@@ -108,36 +57,17 @@ def export_and_deliver(
         base_temp_dir = Path(f"/tmp/vaidikai/{client_code}")
         base_temp_dir.mkdir(parents=True, exist_ok=True)
 
-        # STEP 1: Export from Labelbox
-        print(f"Exporting annotations from Labelbox project {labelbox_project_id}...")
-        lb_client = lb.Client(api_key=api_key)
-        project = lb_client.get_project(labelbox_project_id)
+        # STEP 1: Connect to Label Studio and get labeled tasks (SDK v2.x)
+        print(f"Connecting to Label Studio at {ls_url}, project {project_id}...")
+        ls = LabelStudio(base_url=ls_url, api_key=ls_api_key)
 
-        # Build export params — always request label_details so we can inspect annotations
-        export_params: Dict[str, Any] = {
-            "data_row_details": True,
-            "label_details": True,
-            "performance_details": True,
-            "attachments": True,
-        }
+        print("Fetching tasks...")
+        all_tasks = list(ls.tasks.list(project=int(project_id)))
+        # Filter to only tasks that have at least one annotation
+        tasks = [t for t in all_tasks if len(getattr(t, 'annotations', None) or t.get('annotations', [])) > 0]
 
-        # Do NOT pass a global_key filter here — Labelbox requires exact key matches,
-        # not prefix matches. We filter in Python after fetching all results.
-        export_task = project.export_v2(**export_params)
-
-        print("Export task created. Waiting for completion...")
-        export_task.wait_for_completion(sleep_time=5)
-
-        if export_task.status == "FAILED":
-            raise ValueError("Export task failed")
-
-        print("Export completed successfully")
-
-        # Get export results
-        export_results = export_task.get_labels()
-
-        if not export_results:
-            print("No labels found in export results")
+        if not tasks:
+            print("No labeled tasks found in project")
             return {
                 "status": "success",
                 "rows_exported": 0,
@@ -148,30 +78,29 @@ def export_and_deliver(
                 "message": "No completed annotations found",
             }
 
-        print(f"Retrieved {len(export_results)} labels from export")
+        print(f"Retrieved {len(tasks)} labeled task(s) from project")
 
-        # STEP 2: Filter labels
-        # If a specific label_id was requested, narrow to that one label.
-        if label_id:
-            export_results = [l for l in export_results if str(getattr(l, 'uid', '') or getattr(l, 'id', '')) == str(label_id)]
-            print(f"Filtered to label_id={label_id}: {len(export_results)} result(s)")
+        # STEP 2: Filter tasks by client_code and filename
+        # SDK v2.x returns Task objects; fall back to dict access for safety
+        def _task_field(t, *keys):
+            for k in keys:
+                try:
+                    v = t.data.get(k) if hasattr(t, 'data') else t.get("data", {}).get(k)
+                    if v is not None:
+                        return v
+                except Exception:
+                    pass
+            return None
 
-        # Filter by file prefix using data_row.global_key
-        file_prefix = f"{client_code}_{original_filename}_"
-        matched_labels = []
-        for label in export_results:
-            try:
-                data_row = label.data_row
-                global_key = data_row.global_key or ""
-                if global_key.startswith(file_prefix):
-                    matched_labels.append(label)
-            except Exception as e:
-                print(f"Error reading data_row for label: {e}")
-                continue
+        matched_tasks = [
+            t for t in tasks
+            if _task_field(t, "client_code") == client_code
+            and _task_field(t, "filename") == original_filename
+        ]
 
-        print(f"Labels matching prefix '{file_prefix}': {len(matched_labels)}")
+        print(f"Tasks matching client_code='{client_code}', filename='{original_filename}': {len(matched_tasks)}")
 
-        if not matched_labels:
+        if not matched_tasks:
             return {
                 "status": "success",
                 "rows_exported": 0,
@@ -179,20 +108,46 @@ def export_and_deliver(
                 "csv_filename": "",
                 "delivery_path": "",
                 "client_code": client_code,
-                "message": "No labels matched the file prefix",
+                "message": "No tasks matched the given client_code and filename",
             }
 
-        # STEP 3: Extract segments from matched labels
-        print(f"Extracting temporal audio segments for {original_filename}...")
-        all_segments: List[Dict[str, Any]] = []
+        # STEP 3: Extract segments from matched tasks
+        print(f"Extracting audio annotation segments for {original_filename}...")
+        segments: List[Dict[str, Any]] = []
 
-        for label in matched_labels:
-            segments = _extract_segments_from_label(label)
-            all_segments.extend(segments)
+        for task in matched_tasks:
+            raw_annotations = getattr(task, 'annotations', None) or task.get("annotations", [])
+            for annotation in raw_annotations:
+                result = getattr(annotation, 'result', None) or annotation.get("result", [])
 
-        print(f"Extracted {len(all_segments)} segments total")
+                # Map start_end_key → speaker label and transcript text
+                labels_map: Dict[str, str] = {}
+                text_map: Dict[str, str] = {}
 
-        if not all_segments:
+                for r in result:
+                    val = r.get("value", {}) if isinstance(r, dict) else getattr(r, 'value', {})
+                    rtype = r.get("type") if isinstance(r, dict) else getattr(r, 'type', '')
+                    key = f"{val.get('start', 0):.3f}_{val.get('end', 0):.3f}"
+                    if rtype == "labels":
+                        labels = val.get("labels", [])
+                        labels_map[key] = labels[0] if labels else "Unknown"
+                    elif rtype == "textarea":
+                        texts = val.get("text", [])
+                        text_map[key] = texts[0] if texts else ""
+
+                # Merge speaker + transcript into segments
+                for key, speaker in labels_map.items():
+                    start, end = map(float, key.split("_"))
+                    segments.append({
+                        "start_time": start,
+                        "end_time": end,
+                        "speaker": speaker,
+                        "transcript": text_map.get(key, ""),
+                    })
+
+        print(f"Extracted {len(segments)} segments total")
+
+        if not segments:
             return {
                 "status": "success",
                 "rows_exported": 0,
@@ -203,11 +158,14 @@ def export_and_deliver(
                 "message": "No annotation segments could be extracted",
             }
 
+        # Sort segments by start_time
+        segments.sort(key=lambda s: s["start_time"])
+
         # STEP 4: Build output filenames
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        original_filename_without_ext = Path(original_filename).stem
-        json_filename = f"{original_filename_without_ext}_annotated_{timestamp}.json"
-        csv_filename = f"{original_filename_without_ext}_annotated_{timestamp}.csv"
+        stem = Path(original_filename).stem
+        json_filename = f"{stem}_annotated_{timestamp}.json"
+        csv_filename = f"{stem}_annotated_{timestamp}.csv"
 
         # STEP 5: Build JSON payload
         exported_at = datetime.now().isoformat()
@@ -215,8 +173,8 @@ def export_and_deliver(
             "client_code": client_code,
             "original_filename": original_filename,
             "exported_at": exported_at,
-            "total_segments": len(all_segments),
-            "segments": all_segments,
+            "total_segments": len(segments),
+            "segments": segments,
         }
 
         json_path = base_temp_dir / json_filename
@@ -225,8 +183,7 @@ def export_and_deliver(
 
         # STEP 6: Build CSV
         csv_path = base_temp_dir / csv_filename
-        df = pd.DataFrame(all_segments, columns=["start_time", "end_time", "speaker", "transcript"])
-        df = df.sort_values("start_time").reset_index(drop=True)
+        df = pd.DataFrame(segments, columns=["start_time", "end_time", "speaker", "transcript"])
         df.to_csv(csv_path, index=False, encoding="utf-8")
         print(f"CSV saved to {csv_path}")
 
@@ -250,7 +207,7 @@ def export_and_deliver(
 
         result = {
             "status": "success",
-            "rows_exported": len(all_segments),
+            "rows_exported": len(segments),
             "json_filename": json_filename,
             "csv_filename": csv_filename,
             "delivery_path": delivery_path,
@@ -269,61 +226,73 @@ def export_and_deliver(
             "original_filename": original_filename,
         }
 
-def check_annotation_status(client_code: str, labelbox_project_id: str, original_filename: str = None) -> Dict[str, Any]:
+
+def check_annotation_status(
+    client_code: str,
+    project_id: str,
+    original_filename: str = None,
+) -> Dict[str, Any]:
     """
-    Check the annotation status for a client or a specific file in Labelbox.
-    
+    Check the annotation status for a client (or specific file) in Label Studio.
+
     Args:
         client_code: Client identifier
-        labelbox_project_id: Labelbox project ID
-        original_filename: Optional original filename to filter by
-    
+        project_id: Label Studio project ID
+        original_filename: Optional filename to narrow the filter
+
     Returns:
-        Dict with annotation status
+        Dict with annotation status including total_segments, completed_annotations,
+        pending_annotations, and completion_percentage
     """
     try:
-        api_key = os.getenv("LABELBOX_API_KEY")
-        if not api_key:
-            raise ValueError("LABELBOX_API_KEY not found in environment")
-        
-        client = lb.Client(api_key=api_key)
-        project = client.get_project(labelbox_project_id)
-        
-        # Get all data rows for this client
-        data_rows = list(project.data_rows())
-        
-        prefix = f"{client_code}_"
-        if original_filename:
-            prefix = f"{client_code}_{original_filename}_"
-            
-        client_rows = []
-        for row in data_rows:
-            if hasattr(row, 'global_key') and row.global_key.startswith(prefix):
-                client_rows.append(row)
-        
-        total_rows = len(client_rows)
-        labeled_rows = 0
-        
-        for row in client_rows:
-            # In newer SDKs, data_row.labels() is the way
-            labels = list(row.labels())
-            if labels:
-                labeled_rows += 1
-        
+        ls_url = os.getenv("LABEL_STUDIO_URL")
+        ls_api_key = os.getenv("LABEL_STUDIO_API_KEY")
+
+        if not ls_url:
+            raise ValueError("LABEL_STUDIO_URL not found in environment")
+        if not ls_api_key:
+            raise ValueError("LABEL_STUDIO_API_KEY not found in environment")
+
+        ls = LabelStudio(base_url=ls_url, api_key=ls_api_key)
+
+        print(f"Fetching tasks for project {project_id}...")
+        all_tasks = list(ls.tasks.list(project=int(project_id)))
+
+        def _get_data(t, key):
+            try:
+                return t.data.get(key) if hasattr(t, 'data') else t.get("data", {}).get(key)
+            except Exception:
+                return None
+
+        # Filter by client_code, and optionally by filename
+        filtered_tasks = [
+            t for t in all_tasks
+            if _get_data(t, "client_code") == client_code
+            and (original_filename is None or _get_data(t, "filename") == original_filename)
+        ]
+
+        total = len(filtered_tasks)
+
+        # A task is considered labeled if it has at least one completed annotation
+        completed = sum(
+            1 for t in filtered_tasks
+            if len(getattr(t, 'annotations', None) or t.get("annotations", [])) > 0
+        )
+
         status = {
             "client_code": client_code,
             "filename": original_filename,
-            "total_segments": total_rows,
-            "completed_annotations": labeled_rows,
-            "pending_annotations": total_rows - labeled_rows,
-            "completion_percentage": round((labeled_rows / total_rows * 100), 1) if total_rows > 0 else 0
+            "total_segments": total,
+            "completed_annotations": completed,
+            "pending_annotations": total - completed,
+            "completion_percentage": round((completed / total * 100), 1) if total > 0 else 0,
         }
-        
+
         return status
-        
+
     except Exception as e:
         return {
             "status": "error",
             "error": str(e),
-            "client_code": client_code
+            "client_code": client_code,
         }
