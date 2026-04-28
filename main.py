@@ -672,19 +672,24 @@ async def labelstudio_webhook(request: Request, background_tasks: BackgroundTask
 
     action = payload.get("action", "")
 
-    # Trigger export on:
-    # - ANNOTATION_CREATED / ANNOTATION_UPDATED → labeler submitted (no review queue)
-    # - REVIEW_CREATED / REVIEW_UPDATED with accepted=True → reviewer approved
+    # Manual review workflow support
+    is_accepted = False
     annotation = payload.get("annotation", {})
-
+    
     if action in ("REVIEW_CREATED", "REVIEW_UPDATED"):
-        if not annotation.get("accepted", False):
-            return {"received": True, "action": "ignored", "reason": "review not accepted"}
-    elif action in ("ANNOTATION_CREATED", "ANNOTATION_UPDATED"):
-        if annotation.get("was_cancelled", False):
-            return {"received": True, "action": "ignored", "reason": "annotation cancelled"}
-    else:
-        return {"received": True, "action": "ignored", "event": action}
+        is_accepted = payload.get("review", {}).get("accepted", False)
+    elif action == "ANNOTATION_UPDATED":
+        # Check manual status choice in result for Community Edition workaround
+        result = annotation.get("result", [])
+        for r_item in result:
+            if r_item.get("from_name") == "review_status":
+                choices = r_item.get("value", {}).get("choices", [])
+                if "Accepted" in choices:
+                    is_accepted = True
+                break
+    
+    if not is_accepted:
+        return {"received": True, "action": "ignored", "reason": f"Status not accepted (Action: {action})"}
 
     # Task data contains client_code and filename set during push_to_labelstudio
     task = payload.get("task", {})

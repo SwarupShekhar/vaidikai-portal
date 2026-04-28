@@ -38,11 +38,23 @@ def _transcode_to_mp3(input_data: bytes, original_ext: str = ".m4a") -> bytes:
             os.remove(tmp_out_path)
 
 
+def _make_sas_url(account_name: str, account_key: str, container: str, blob_name: str) -> str:
+    sas_token = generate_blob_sas(
+        account_name=account_name,
+        container_name=container,
+        blob_name=blob_name,
+        account_key=account_key,
+        permission=BlobSasPermissions(read=True),
+        expiry=datetime.utcnow() + timedelta(days=30),
+    )
+    return f"https://{account_name}.blob.core.windows.net/{container}/{blob_name}?{sas_token}"
+
+
 def generate_mp3_sas_url(filename: str, client_code: str) -> str:
     """
-    Download the original audio from Azure, transcode to MP3, upload to
-    the 'processing' container, and return a 30-day SAS URL for the MP3.
-    Browsers need MP3; m4a/wav playback is unreliable in Label Studio.
+    Return a 30-day SAS URL for an audio file suitable for Label Studio playback.
+    Attempts to transcode to MP3 via ffmpeg when available; falls back to the
+    original file (M4A/WAV) with a direct SAS URL when ffmpeg is absent.
     """
     connection_string = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
     if not connection_string:
@@ -70,33 +82,29 @@ def generate_mp3_sas_url(filename: str, client_code: str) -> str:
         raise ValueError(f"No blob found in client-intake matching {client_code}/*{filename}")
     src_blob_name = sorted(matching)[-1]
 
-    ext = os.path.splitext(src_blob_name)[1]
-    mp3_blob_name = src_blob_name.replace(ext, ".mp3")
+    ext = os.path.splitext(src_blob_name)[1].lower()
+    mp3_blob_name = src_blob_name[: -len(ext)] + ".mp3"
 
     mp3_blob_client = blob_svc.get_blob_client(container="processing", blob=mp3_blob_name)
 
-    if not mp3_blob_client.exists():
-        print(f"Transcoding {src_blob_name} → MP3 for Label Studio...")
-        audio_data = blob_svc.get_blob_client(container="client-intake", blob=src_blob_name).download_blob().readall()
+    if mp3_blob_client.exists():
+        print(f"Reusing existing MP3 at processing/{mp3_blob_name}")
+        return _make_sas_url(account_name, account_key, "processing", mp3_blob_name)
+
+    # Try transcoding with ffmpeg; fall back to original when ffmpeg is unavailable
+    print(f"Transcoding {src_blob_name} → MP3 for Label Studio...")
+    audio_data = blob_svc.get_blob_client(container="client-intake", blob=src_blob_name).download_blob().readall()
+    try:
         mp3_data = _transcode_to_mp3(audio_data, ext)
         mp3_blob_client.upload_blob(
             mp3_data, overwrite=True,
-            content_settings=ContentSettings(content_type="audio/mpeg")
+            content_settings=ContentSettings(content_type="audio/mpeg"),
         )
         print(f"Uploaded MP3 to processing/{mp3_blob_name}")
-    else:
-        print(f"Reusing existing MP3 at processing/{mp3_blob_name}")
-
-    sas_token = generate_blob_sas(
-        account_name=account_name,
-        container_name="processing",
-        blob_name=mp3_blob_name,
-        account_key=account_key,
-        permission=BlobSasPermissions(read=True),
-        expiry=datetime.utcnow() + timedelta(days=30),
-    )
-
-    return f"{mp3_blob_client.url}?{sas_token}"
+        return _make_sas_url(account_name, account_key, "processing", mp3_blob_name)
+    except (FileNotFoundError, subprocess.SubprocessError) as e:
+        print(f"ffmpeg unavailable ({e}), serving original {ext} directly")
+        return _make_sas_url(account_name, account_key, "client-intake", src_blob_name)
 
 
 def push_to_labelstudio(
@@ -135,18 +143,55 @@ def push_to_labelstudio(
             with open(processed_file_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
 
-        segments = data if isinstance(data, list) else data.get('segments', [])
-
-        if not segments:
+        raw = data if isinstance(data, list) else data.get('segments', [])
+        if not raw:
             raise ValueError(f"No segments found in processed JSON")
+
+        # Normalise both processed.json (start_time/end_time/transcript) and
+        # transcript.json (start/end/text) to a common shape.
+        segments = [
+            {
+                "start_time": s.get("start_time") if s.get("start_time") is not None else s.get("start", 0),
+                "end_time":   s.get("end_time")   if s.get("end_time")   is not None else s.get("end",   0),
+                "transcript": s.get("transcript") or s.get("text", ""),
+                "speaker":    s.get("speaker", "Unknown"),
+            }
+            for s in raw
+        ]
 
         print(f"Loaded {len(segments)} segments")
 
-        # STEP 2: Connect to Label Studio (SDK v2.x)
-        print(f"Connecting to Label Studio at {ls_url}...")
-        ls_client = LabelStudio(base_url=ls_url, api_key=api_key)
-        me = ls_client.users.whoami()
-        print(f"Connected as: {me.email}")
+        # STEP 2: Build auth headers — auto-exchange refresh tokens for access tokens
+        import requests as _req
+        ls_url = ls_url.rstrip("/")
+
+        def _resolve_token(token: str, url: str) -> str:
+            """If token is a refresh JWT, exchange it for a short-lived access token."""
+            if not token.startswith("eyJ"):
+                return token  # legacy short token, use as-is
+            import base64, json as _json
+            try:
+                payload = token.split(".")[1]
+                payload += "=" * (4 - len(payload) % 4)
+                claims = _json.loads(base64.b64decode(payload))
+                if claims.get("token_type") == "refresh":
+                    r = _req.post(f"{url}/api/token/refresh", json={"refresh": token}, timeout=15)
+                    r.raise_for_status()
+                    return r.json()["access"]
+            except Exception as e:
+                print(f"Token refresh failed, using token as-is: {e}")
+            return token
+
+        def _ls_headers(token: str) -> dict:
+            return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
+        access_token = _resolve_token(api_key, ls_url)
+        headers = _ls_headers(access_token)
+
+        # Verify connection
+        r = _req.get(f"{ls_url}/api/current-user/whoami", headers=headers, timeout=15)
+        r.raise_for_status()
+        print(f"Connected as: {r.json().get('email', 'unknown')}")
 
         # STEP 3: Transcode to MP3 and get SAS URL (browsers can't reliably play m4a/wav)
         print(f"Transcoding audio to MP3 for {client_code}/{original_filename}...")
@@ -238,17 +283,20 @@ def push_to_labelstudio(
         }
 
         print(f"Importing task to Label Studio with {len(segments)} segments ({len(result)} annotation regions)...")
-        imported = ls_client.projects.import_tasks(id=int(project_id), request=[task_payload])
-        print(f"Import complete. Response: {imported}")
+        r = _req.post(
+            f"{ls_url}/api/projects/{project_id}/import",
+            json=[task_payload],
+            headers=headers,
+            timeout=60
+        )
+        r.raise_for_status()
+        resp = r.json()
+        print(f"Import complete. Response: {resp}")
 
         task_id = None
         try:
-            ids = getattr(imported, 'task_ids', None) or getattr(imported, 'ids', None)
-            if ids:
-                task_id = ids[0]
-            elif isinstance(imported, dict):
-                ids = imported.get('task_ids') or imported.get('ids', [])
-                task_id = ids[0] if ids else imported.get('id')
+            ids = resp.get('task_ids') or resp.get('ids', [])
+            task_id = ids[0] if ids else resp.get('id')
         except Exception:
             pass
 

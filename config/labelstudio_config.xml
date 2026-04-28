@@ -1,4 +1,10 @@
 <View>
+  <Header value="Review Status (Admin/Reviewer Use Only)"/>
+  <Choices name="review_status" toName="audio" choice="single" showInline="true">
+    <Choice value="Accepted" hint="Mark as ready for client delivery"/>
+    <Choice value="Rejected" hint="Needs correction"/>
+  </Choices>
+
   <Audio name="audio" value="$audio"/>
   <Labels name="speaker" toName="audio">
     <Label value="Agent" background="#2196F3"/>
@@ -11,6 +17,7 @@
     <Label value="Interviewee" background="#607D8B"/>
     <Label value="Speaker 1" background="#3F51B5"/>
     <Label value="Speaker 2" background="#009688"/>
+    <Label value="AI" background="#E91E63"/>
   </Labels>
   <TextArea name="transcript" toName="audio" perRegion="true" placeholder="Transcript..." rows="2"/>
 </View>

@@ -1,5 +1,6 @@
 fastapi==0.111.0
 uvicorn==0.29.0
+gunicorn==22.0.0
 python-multipart==0.0.9
 azure-storage-blob==12.19.1
 python-dotenv==1.0.1
@@ -11,4 +12,3 @@ openpyxl
 openai
 aiohttp
 requests
-faster-whisper
