@@ -81,12 +81,24 @@ def export_and_deliver(
             r.raise_for_status()
             resp = r.json()
             all_tasks = resp if isinstance(resp, list) else resp.get("tasks", [])
-            matched_tasks = [
-                t for t in all_tasks
+
+            # The list endpoint does NOT include annotations — only IDs.
+            # Find matching tasks by client_code/filename first, then fetch
+            # each individually to get full annotation data.
+            candidate_ids = [
+                t["id"] for t in all_tasks
                 if t.get("data", {}).get("client_code") == client_code
                 and t.get("data", {}).get("filename") == original_filename
-                and len(t.get("annotations", [])) > 0
+                and t.get("total_annotations", 0) > 0
             ]
+            print(f"Found {len(candidate_ids)} candidate task IDs: {candidate_ids}")
+
+            for tid in candidate_ids:
+                tr = requests.get(f"{ls_url}/api/tasks/{tid}", headers=headers, timeout=15)
+                if tr.status_code == 200:
+                    full_task = tr.json()
+                    if len(full_task.get("annotations", [])) > 0:
+                        matched_tasks.append(full_task)
 
         if not matched_tasks:
             print(f"No annotated tasks found for {client_code}/{original_filename}")
@@ -334,7 +346,7 @@ def check_annotation_status(
         ]
 
         total = len(filtered_tasks)
-        completed = sum(1 for t in filtered_tasks if len(t.get("annotations", [])) > 0)
+        completed = sum(1 for t in filtered_tasks if t.get("total_annotations", 0) > 0)
 
         return {
             "client_code": client_code,

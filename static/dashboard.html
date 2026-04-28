@@ -204,27 +204,24 @@
                     }
 
                     let progressHtml = '';
-                    if (file.status === 'In Review') {
+                    if (file.status === 'In Review' || file.status === 'Completed') {
                         try {
                             const statusResponse = await fetch(`/api/status/${clientCode}/${file.name}`);
                             const statusData = await statusResponse.json();
                             if (statusData.total_segments > 0) {
+                                const isFinished = statusData.completion_percentage === 100;
                                 progressHtml = `
                                     <div class="progress-container">
                                         <span class="progress-text">${statusData.completed_annotations}/${statusData.total_segments} labeled</span>
                                         <div class="mini-progress">
                                             <div class="mini-progress-fill" style="width: ${statusData.completion_percentage}%"></div>
                                         </div>
+                                        ${isFinished ? `<button class="btn-small" style="margin-top:10px" onclick="finalizeExport('${file.name}')">Finalize & Deliver</button>` : ''}
                                     </div>
                                 `;
-                                if (statusData.completion_percentage === 100) {
+                                if (isFinished && file.status !== 'Completed') {
                                     file.status = 'Review Finished';
                                     statusClass = 'status-completed';
-                                    progressHtml = `
-                                        <div class="progress-container">
-                                            <button class="btn-small" onclick="finalizeExport('${file.name}')">Finalize & Deliver</button>
-                                        </div>
-                                    `;
                                 }
                             }
                         } catch (e) {

@@ -678,7 +678,7 @@ async def labelstudio_webhook(request: Request, background_tasks: BackgroundTask
     
     if action in ("REVIEW_CREATED", "REVIEW_UPDATED"):
         is_accepted = payload.get("review", {}).get("accepted", False)
-    elif action == "ANNOTATION_UPDATED":
+    elif action in ("ANNOTATION_UPDATED", "ANNOTATION_CREATED"):
         # Check manual status choice in result for Community Edition workaround
         result = annotation.get("result", [])
         for r_item in result:
