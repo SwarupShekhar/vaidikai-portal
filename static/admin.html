@@ -1000,6 +1000,8 @@
                 <td class="token-cell" title="${esc(c.token)}">${esc(c.token)}</td>
                 <td class="actions" style="display:flex;flex-wrap:wrap;gap:4px;">
                     <button class="btn-icon btn-copy" title="Generate & copy upload link for client" onclick="generateUploadLink('${esc(c.token)}', '${esc(c.client_name)}')">📤 Upload Link</button>
+                    <button class="btn-icon" style="background:rgba(138,43,226,0.15);color:#a25df2;" title="Copy Project Manager access link" onclick="copyLink('${esc(c.token)}')">💼 PM Link</button>
+                    <button class="btn-icon" style="background:rgba(255,140,0,0.15);color:#ff8c00;" title="Configure project IDs and speaker labels" onclick="openConfigModal('${esc(c.token)}')">⚙️ Configure</button>
                     <button class="btn-icon" style="background:rgba(81,207,102,0.12);color:#51cf66;" title="Generate a download link for a delivered file" onclick="openDownloadLinkModal('${esc(c.token)}', '${esc(c.client_code)}', '${esc(c.client_name)}')">📥 Download Link</button>
                     <button class="btn-icon ${toggleClass}" onclick="toggleClient('${esc(c.token)}')">${toggleLabel}</button>
                     <button class="btn-icon btn-rotate" onclick="rotateToken('${esc(c.token)}', '${esc(c.client_name)}')">Rotate</button>
@@ -1090,6 +1092,143 @@
             toast(`📤 Upload link for "${name}" copied! Share it with the client.`);
         } else {
             alert('Failed to generate upload link.');
+        }
+    }
+
+    // ── Client Configuration Modal ────────────────────────
+    function openConfigModal(token) {
+        // Find client details from the loaded clients list
+        const client = _clients.find(c => c.token === token);
+        if (!client) {
+            alert('Client details not found');
+            return;
+        }
+
+        // Remove existing modal if any
+        const existing = document.getElementById('config-modal');
+        if (existing) existing.remove();
+
+        const projectIds = client.project_ids || {};
+        const roleLabels = client.role_labels || [];
+
+        const modal = document.createElement('div');
+        modal.id = 'config-modal';
+        modal.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(10,10,12,0.85);backdrop-filter:blur(8px);display:flex;align-items:center;justify-content:center;z-index:9999;font-family:inherit;';
+        
+        modal.innerHTML = `
+            <div class="card" style="width:100%;max-width:540px;background:#16161a;border:1px solid #2d2d34;border-radius:12px;padding:28px;box-shadow:0 20px 40px rgba(0,0,0,0.5);color:#fff;overflow-y:auto;max-height:90vh;">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;border-bottom:1px solid #2d2d34;padding-bottom:12px;">
+                    <h3 style="margin:0;font-size:1.3rem;color:var(--accent-color)">⚙️ Client Configuration</h3>
+                    <button onclick="document.getElementById('config-modal').remove()" style="background:none;border:none;color:#8a8a9a;font-size:1.4rem;cursor:pointer;padding:0 8px;">✕</button>
+                </div>
+                
+                <h4 style="margin:0 0 16px 0;font-size:1rem;color:#fff;font-weight:600;">Client: ${esc(client.client_name)} (${esc(client.client_code)})</h4>
+                
+                <div id="config-error" style="color:#ff6b6b;margin-bottom:15px;font-size:0.9rem;"></div>
+                
+                <form id="config-form" onsubmit="saveClientConfig(event, '${token}')">
+                    <div class="field-group" style="margin-bottom:15px;">
+                        <label style="display:block;margin-bottom:6px;color:#8a8a9a;font-size:0.85rem;">Client Name</label>
+                        <input type="text" id="config-client-name" value="${esc(client.client_name)}" style="width:100%;padding:10px;background:#202024;border:1px solid #2d2d34;border-radius:6px;color:#fff;box-sizing:border-box;font-family:inherit;" required />
+                    </div>
+                    
+                    <div class="field-group" style="margin-bottom:15px;">
+                        <label style="display:block;margin-bottom:6px;color:#8a8a9a;font-size:0.85rem;">Contact Email</label>
+                        <input type="email" id="config-contact-email" value="${esc(client.contact_email || '')}" style="width:100%;padding:10px;background:#202024;border:1px solid #2d2d34;border-radius:6px;color:#fff;box-sizing:border-box;font-family:inherit;" />
+                    </div>
+                    
+                    <h5 style="margin:20px 0 10px 0;color:var(--accent-color);font-size:0.9rem;text-transform:uppercase;letter-spacing:1px;border-bottom:1px solid #2d2d34;padding-bottom:4px;">Label Studio Projects Configuration</h5>
+                    
+                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:20px;">
+                        <div>
+                            <label style="display:block;margin-bottom:4px;color:#8a8a9a;font-size:0.8rem;">🎙️ Audio (Default: 1)</label>
+                            <input type="number" id="pid-audio" value="${esc(projectIds.audio || '')}" placeholder="1" style="width:100%;padding:8px;background:#202024;border:1px solid #2d2d34;border-radius:6px;color:#fff;box-sizing:border-box;font-family:inherit;" />
+                        </div>
+                        <div>
+                            <label style="display:block;margin-bottom:4px;color:#8a8a9a;font-size:0.8rem;">📝 Transcript (Default: 1)</label>
+                            <input type="number" id="pid-transcript" value="${esc(projectIds.transcript || '')}" placeholder="1" style="width:100%;padding:8px;background:#202024;border:1px solid #2d2d34;border-radius:6px;color:#fff;box-sizing:border-box;font-family:inherit;" />
+                        </div>
+                        <div>
+                            <label style="display:block;margin-bottom:4px;color:#8a8a9a;font-size:0.8rem;">💍 Jewelry (Default: 2)</label>
+                            <input type="number" id="pid-jewelry" value="${esc(projectIds.jewelry || '')}" placeholder="2" style="width:100%;padding:8px;background:#202024;border:1px solid #2d2d34;border-radius:6px;color:#fff;box-sizing:border-box;font-family:inherit;" />
+                        </div>
+                        <div>
+                            <label style="display:block;margin-bottom:4px;color:#8a8a9a;font-size:0.8rem;">🏠 Housing (Default: 5)</label>
+                            <input type="number" id="pid-housing" value="${esc(projectIds.housing || '')}" placeholder="5" style="width:100%;padding:8px;background:#202024;border:1px solid #2d2d34;border-radius:6px;color:#fff;box-sizing:border-box;font-family:inherit;" />
+                        </div>
+                        <div>
+                            <label style="display:block;margin-bottom:4px;color:#8a8a9a;font-size:0.8rem;">💼 Business (Default: 6)</label>
+                            <input type="number" id="pid-business" value="${esc(projectIds.business || '')}" placeholder="6" style="width:100%;padding:8px;background:#202024;border:1px solid #2d2d34;border-radius:6px;color:#fff;box-sizing:border-box;font-family:inherit;" />
+                        </div>
+                        <div>
+                            <label style="display:block;margin-bottom:4px;color:#8a8a9a;font-size:0.8rem;">📄 Secure Forms (Default: 3)</label>
+                            <input type="number" id="pid-form" value="${esc(projectIds.form || '')}" placeholder="3" style="width:100%;padding:8px;background:#202024;border:1px solid #2d2d34;border-radius:6px;color:#fff;box-sizing:border-box;font-family:inherit;" />
+                        </div>
+                        <div style="grid-column: span 2;">
+                            <label style="display:block;margin-bottom:4px;color:#8a8a9a;font-size:0.8rem;">📊 Clickstream Sequence (Default: 4)</label>
+                            <input type="number" id="pid-clickstream" value="${esc(projectIds.clickstream || '')}" placeholder="4" style="width:100%;padding:8px;background:#202024;border:1px solid #2d2d34;border-radius:6px;color:#fff;box-sizing:border-box;font-family:inherit;" />
+                        </div>
+                    </div>
+                    
+                    <h5 style="margin:20px 0 10px 0;color:var(--accent-color);font-size:0.9rem;text-transform:uppercase;letter-spacing:1px;border-bottom:1px solid #2d2d34;padding-bottom:4px;">Custom Role Labels (Audio Transcription)</h5>
+                    <div class="field-group" style="margin-bottom:24px;">
+                        <label style="display:block;margin-bottom:6px;color:#8a8a9a;font-size:0.85rem;">Enter comma-separated roles in speaker order (e.g. "Advisor, Customer")</label>
+                        <input type="text" id="config-role-labels" value="${esc(roleLabels.join(', '))}" placeholder="e.g. Advisor, Customer" style="width:100%;padding:10px;background:#202024;border:1px solid #2d2d34;border-radius:6px;color:#fff;box-sizing:border-box;font-family:inherit;" />
+                    </div>
+                    
+                    <div style="display:flex;justify-content:flex-end;gap:12px;border-top:1px solid #2d2d34;padding-top:16px;">
+                        <button type="button" onclick="document.getElementById('config-modal').remove()" class="btn-icon" style="background:#2d2d34;color:#fff;border:none;padding:10px 16px;border-radius:6px;cursor:pointer;font-weight:500;">Cancel</button>
+                        <button type="submit" class="btn-icon" style="background:var(--accent-color);color:#000;border:none;padding:10px 20px;border-radius:6px;cursor:pointer;font-weight:600;">Save Settings</button>
+                    </div>
+                </form>
+            </div>
+        `;
+        document.body.appendChild(modal);
+    }
+
+    async function saveClientConfig(event, token) {
+        event.preventDefault();
+        const errDiv = document.getElementById('config-error');
+        errDiv.textContent = '';
+
+        const name = document.getElementById('config-client-name').value.trim();
+        const email = document.getElementById('config-contact-email').value.trim();
+        
+        const project_ids = {};
+        const pids = ['audio', 'transcript', 'jewelry', 'housing', 'business', 'form', 'clickstream'];
+        pids.forEach(p => {
+            const val = document.getElementById(`pid-${p}`).value.trim();
+            if (val) {
+                project_ids[p] = parseInt(val, 10);
+            }
+        });
+
+        const rawRoles = document.getElementById('config-role-labels').value.trim();
+        const role_labels = rawRoles ? rawRoles.split(',').map(r => r.trim()).filter(Boolean) : [];
+
+        const body = new URLSearchParams({
+            client_name: name,
+            contact_email: email,
+            project_ids_json: JSON.stringify(project_ids),
+            role_labels_json: JSON.stringify(role_labels)
+        });
+
+        try {
+            const res = await fetch(`/api/admin/clients/${token}`, {
+                method: 'PATCH',
+                body: body
+            });
+            if (res.ok) {
+                toast('Configuration saved successfully!');
+                const modal = document.getElementById('config-modal');
+                if (modal) modal.remove();
+                await loadClients();
+            } else {
+                const data = await res.json();
+                errDiv.textContent = data.detail || 'Failed to save configuration';
+            }
+        } catch (e) {
+            errDiv.textContent = 'Connection error: ' + e;
         }
     }
 

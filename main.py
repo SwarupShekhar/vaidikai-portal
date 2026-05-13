@@ -287,6 +287,7 @@ async def upload_file_via_token(
     file: UploadFile = File(...),
     upload_token: str = Form(...),
     language: str = Form("en"),
+    category: str = Form("auto"),
 ):
     """Client-facing anonymous upload — authenticated via upload_token, not session cookie."""
     clients = load_clients()
@@ -301,7 +302,7 @@ async def upload_file_via_token(
 
     # Re-use the same upload logic by calling through the internal pipeline
     # We pass client_code as a verified value, bypassing session check
-    return await _run_upload_pipeline(background_tasks, file, client_code, language)
+    return await _run_upload_pipeline(background_tasks, file, client_code, language, category)
 
 
 @app.post("/api/upload")
@@ -310,13 +311,14 @@ async def upload_file(
     file: UploadFile = File(...),
     client_code: str = Form(...),
     language: str = Form("en"),
+    category: str = Form("auto"),
     vaicore_session: str = Cookie(None),
 ):
     await verify_session_client(client_code, vaicore_session)
-    return await _run_upload_pipeline(background_tasks, file, client_code, language)
+    return await _run_upload_pipeline(background_tasks, file, client_code, language, category)
 
 
-async def _run_upload_pipeline(background_tasks: BackgroundTasks, file: UploadFile, client_code: str, language: str):
+async def _run_upload_pipeline(background_tasks: BackgroundTasks, file: UploadFile, client_code: str, language: str, category: str = "auto"):
 
 
     allowed_types = [
@@ -435,6 +437,7 @@ async def _run_upload_pipeline(background_tasks: BackgroundTasks, file: UploadFi
 
     filename_lower = safe_filename.lower()
     
+    # 1. Check for ZIP batch
     if is_zip:
         background_tasks.add_task(
             run_zip_batch_pipeline,
@@ -443,9 +446,19 @@ async def _run_upload_pipeline(background_tasks: BackgroundTasks, file: UploadFi
             original_filename=safe_filename,
             timestamp=timestamp,
             batch_id=batch_id,
+            category=category,
         )
-    # 1. Dispatch Audio Files
-    elif file.content_type in audio_types or is_audio_by_extension:
+    # 2. Check for EXPLICIT category overrides from upload dropdown selector
+    elif category == "jewelry" or category == "housing" or category == "business":
+        background_tasks.add_task(
+            run_jewelry_pipeline,
+            blob_filename=blob_name,
+            client_code=client_code,
+            original_filename=safe_filename,
+            timestamp=timestamp,
+            force_project_type=category,
+        )
+    elif category == "audio":
         background_tasks.add_task(
             run_full_pipeline,
             blob_filename=blob_name,
@@ -454,12 +467,7 @@ async def _run_upload_pipeline(background_tasks: BackgroundTasks, file: UploadFi
             original_filename=safe_filename,
             timestamp=timestamp,
         )
-    # 2. Dispatch Secure Form Scans / Documents
-    elif (
-        file.content_type in doc_types 
-        or any(ext in filename_lower for ext in [".pdf", ".doc", ".docx"])
-        or any(keyword in filename_lower for keyword in ["form", "invoice", "aadhaar", "pan", "kyc", "personal"])
-    ):
+    elif category == "form":
         background_tasks.add_task(
             run_form_pipeline,
             blob_filename=blob_name,
@@ -467,11 +475,7 @@ async def _run_upload_pipeline(background_tasks: BackgroundTasks, file: UploadFi
             original_filename=safe_filename,
             timestamp=timestamp,
         )
-    # 3. Dispatch Text Transcripts (shared raw transcripts instead of audio files)
-    elif (
-        any(keyword in filename_lower for keyword in ["transcript", "conversation", "dialogue", "chat", "talk"])
-        or filename_lower.endswith(".txt")
-    ):
+    elif category == "transcript":
         background_tasks.add_task(
             run_transcript_pipeline,
             blob_filename=blob_name,
@@ -479,12 +483,7 @@ async def _run_upload_pipeline(background_tasks: BackgroundTasks, file: UploadFi
             original_filename=safe_filename,
             timestamp=timestamp,
         )
-    # 4. Dispatch Clickstream Sequence Logs
-    elif (
-        file.content_type in ["application/json", "text/csv"]
-        or any(ext in filename_lower for ext in [".json", ".csv"])
-        or "clickstream" in filename_lower
-    ):
+    elif category == "clickstream":
         background_tasks.add_task(
             run_clickstream_pipeline,
             blob_filename=blob_name,
@@ -492,15 +491,66 @@ async def _run_upload_pipeline(background_tasks: BackgroundTasks, file: UploadFi
             original_filename=safe_filename,
             timestamp=timestamp,
         )
-    # 5. Dispatch Jewelry / Object Detection Images
-    elif file.content_type in image_types or any(ext in filename_lower for ext in [".jpg", ".jpeg", ".png", ".webp"]):
-        background_tasks.add_task(
-            run_jewelry_pipeline,
-            blob_filename=blob_name,
-            client_code=client_code,
-            original_filename=safe_filename,
-            timestamp=timestamp,
-        )
+    # 3. Fallback to AUTO-DETECTION based on extension and filename keywords
+    else:
+        # A. Dispatch Audio Files
+        if file.content_type in audio_types or is_audio_by_extension:
+            background_tasks.add_task(
+                run_full_pipeline,
+                blob_filename=blob_name,
+                client_code=client_code,
+                language=language,
+                original_filename=safe_filename,
+                timestamp=timestamp,
+            )
+        # B. Dispatch Secure Form Scans / Documents
+        elif (
+            file.content_type in doc_types 
+            or any(ext in filename_lower for ext in [".pdf", ".doc", ".docx"])
+            or any(keyword in filename_lower for keyword in ["form", "invoice", "aadhaar", "pan", "kyc", "personal"])
+        ):
+            background_tasks.add_task(
+                run_form_pipeline,
+                blob_filename=blob_name,
+                client_code=client_code,
+                original_filename=safe_filename,
+                timestamp=timestamp,
+            )
+        # C. Dispatch Text Transcripts
+        elif (
+            any(keyword in filename_lower for keyword in ["transcript", "conversation", "dialogue", "chat", "talk"])
+            or filename_lower.endswith(".txt")
+        ):
+            background_tasks.add_task(
+                run_transcript_pipeline,
+                blob_filename=blob_name,
+                client_code=client_code,
+                original_filename=safe_filename,
+                timestamp=timestamp,
+            )
+        # D. Dispatch Clickstream Logs
+        elif (
+            file.content_type in ["application/json", "text/csv"]
+            or any(ext in filename_lower for ext in [".json", ".csv"])
+            or "clickstream" in filename_lower
+        ):
+            background_tasks.add_task(
+                run_clickstream_pipeline,
+                blob_filename=blob_name,
+                client_code=client_code,
+                original_filename=safe_filename,
+                timestamp=timestamp,
+            )
+        # E. Dispatch Images
+        elif file.content_type in image_types or any(ext in filename_lower for ext in [".jpg", ".jpeg", ".png", ".webp"]):
+            background_tasks.add_task(
+                run_jewelry_pipeline,
+                blob_filename=blob_name,
+                client_code=client_code,
+                original_filename=safe_filename,
+                timestamp=timestamp,
+                force_project_type="auto",
+            )
 
     return {"success": True, "file_name": safe_filename, "upload_id": blob_name, "batch_id": batch_id}
 
@@ -1013,6 +1063,8 @@ async def admin_list_clients(vaicore_admin: str = Cookie(None)):
             "active": data["active"],
             "created_at": data["created_at"],
             "contact_email": data.get("contact_email", ""),
+            "project_ids": data.get("project_ids", {}),
+            "role_labels": data.get("role_labels", []),
         }
         for token, data in clients.items()
     ]
@@ -1034,6 +1086,8 @@ async def admin_add_client(
         "active": True,
         "created_at": str(date.today()),
         "contact_email": contact_email,
+        "project_ids": {},
+        "role_labels": [],
     }
     save_clients(clients)
     return {
@@ -1043,7 +1097,50 @@ async def admin_add_client(
         "active": True,
         "created_at": str(date.today()),
         "contact_email": contact_email,
+        "project_ids": {},
+        "role_labels": [],
     }
+
+
+@app.patch("/api/admin/clients/{token}")
+async def admin_update_client(
+    token: str,
+    client_name: str = Form(None),
+    contact_email: str = Form(None),
+    project_ids_json: str = Form(None),
+    role_labels_json: str = Form(None),
+    vaicore_admin: str = Cookie(None),
+):
+    _check_admin(vaicore_admin)
+    clients = load_clients()
+    if token not in clients:
+        raise HTTPException(status_code=404, detail="Client not found")
+        
+    client = clients[token]
+    if client_name is not None:
+        client["client_name"] = client_name
+    if contact_email is not None:
+        client["contact_email"] = contact_email
+        
+    if project_ids_json is not None:
+        try:
+            client["project_ids"] = json.loads(project_ids_json)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Invalid project_ids JSON: {e}")
+            
+    if role_labels_json is not None:
+        try:
+            # Let's clean and validate labels
+            labels = json.loads(role_labels_json)
+            if isinstance(labels, list):
+                client["role_labels"] = [str(l).strip() for l in labels if str(l).strip()]
+            else:
+                raise ValueError("role_labels must be a list of strings")
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Invalid role_labels JSON: {e}")
+            
+    save_clients(clients)
+    return {"success": True, "client": client}
 
 
 @app.patch("/api/admin/clients/{token}/toggle")
@@ -1137,26 +1234,255 @@ def run_full_pipeline(
             pass
 
 
+async def resolve_image_category(client_code: str, original_filename: str) -> str:
+    """
+    Intelligently resolves an image's project type (jewelry, housing, or business).
+    Rules:
+    1. Keyword-based matching on the filename.
+    2. Client-specific project_ids defaults from clients.json.
+       If a client ONLY has one image project configured (e.g. they only have housing, or only have business),
+       we automatically default to that category.
+    3. OpenAI visual classification as the ultimate high-fidelity AI fallback.
+    4. Global default ("jewelry").
+    """
+    filename_lower = original_filename.lower()
+    
+    # Rule 1: Filename Keyword Checking
+    is_housing = any(k in filename_lower for k in ["house", "housing", "facade", "building", "property", "home", "villa", "apartment"])
+    is_business = any(k in filename_lower for k in ["business", "store", "shop", "sign", "signboard", "license", "registration", "office", "retail"])
+    is_jewelry = any(k in filename_lower for k in ["jewelry", "jewel", "necklace", "ring", "bangle", "gold", "silver", "platinum", "earring", "bracelet", "gem"])
+    
+    if is_housing:
+        print(f"Keyword-detected category 'housing' for filename: {original_filename}")
+        return "housing"
+    elif is_business:
+        print(f"Keyword-detected category 'business' for filename: {original_filename}")
+        return "business"
+    elif is_jewelry:
+        print(f"Keyword-detected category 'jewelry' for filename: {original_filename}")
+        return "jewelry"
+
+    # Rule 2: Client Default Mapping
+    try:
+        if CLIENTS_FILE.exists():
+            with open(CLIENTS_FILE, 'r', encoding='utf-8') as f:
+                clients = json.load(f)
+            for entry in clients.values():
+                if entry.get("client_code") == client_code:
+                    project_ids = entry.get("project_ids", {})
+                    # If client has specific project type mapping but not others, use it
+                    has_jewelry = "jewelry" in project_ids
+                    has_housing = "housing" in project_ids
+                    has_business = "business" in project_ids
+                    
+                    # If they only have ONE image project mapped, default to it
+                    image_projects = [k for k in ["jewelry", "housing", "business"] if k in project_ids]
+                    if len(image_projects) == 1:
+                        print(f"Client {client_code} only has {image_projects[0]} project mapped. Defaulting to {image_projects[0]}.")
+                        return image_projects[0]
+    except Exception as e:
+        print(f"Error checking client-level default projects: {e}")
+
+    # Rule 3: OpenAI Visual Classification Fallback (High-fidelity)
+    openai_key = os.getenv("OPENAI_API_KEY")
+    if openai_key and not openai_key.startswith("mock"):
+        try:
+            # Generate the secure image URL to send to OpenAI Vision API
+            image_url = generate_sas_url(original_filename, client_code)
+            import requests
+            headers = {
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {openai_key}"
+            }
+            payload = {
+                "model": "gpt-4o-mini",
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": "Classify this image into exactly one of these categories: 'jewelry', 'housing', or 'business'. "
+                                        "Reply with only the category name in lowercase (e.g., 'jewelry', 'housing', or 'business'). "
+                                        "Housing refers to residential buildings/houses. Business refers to store fronts, office spaces, licenses, or documents."
+                            },
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": image_url
+                                }
+                            }
+                        ]
+                    }
+                ],
+                "max_tokens": 10,
+                "temperature": 0.0
+            }
+            print(f"Calling OpenAI Vision model to visually classify: {original_filename}...")
+            r = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload, timeout=12)
+            r.raise_for_status()
+            res_val = r.json()["choices"][0]["message"]["content"].strip().lower()
+            # Clean response text in case it returned punctuation or markdown
+            for cat in ["jewelry", "housing", "business"]:
+                if cat in res_val:
+                    print(f"OpenAI visual classification successful: '{cat}'")
+                    return cat
+        except Exception as vision_err:
+            print(f"OpenAI vision classification failed: {vision_err}")
+
+    # Rule 4: Global Default Fallback
+    print(f"Unresolved image category for {original_filename}, falling back to global default: jewelry")
+    return "jewelry"
+
+
+# ── Pre-annotation helpers ───────────────────────────────────────────────────
+
+def _fetch_image_numpy(url: str):
+    """Download image from URL and decode to BGR numpy array. Returns None on failure."""
+    try:
+        import requests as _req
+        import numpy as np
+        import cv2
+        resp = _req.get(url, timeout=15)
+        resp.raise_for_status()
+        arr = np.frombuffer(resp.content, dtype=np.uint8)
+        img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+        return img
+    except Exception as e:
+        print(f"[PreAnnotation] Image fetch failed: {e}")
+        return None
+
+
+def _opencv_preannotations(image_np, project_type: str) -> list:
+    """OpenCV contour detection → Label Studio polygon predictions. Never raises."""
+    try:
+        import cv2
+        h, w = image_np.shape[:2]
+        gray = cv2.cvtColor(image_np, cv2.COLOR_BGR2GRAY)
+        blurred = cv2.GaussianBlur(gray, (7, 7), 0)
+        edges = cv2.Canny(blurred, 30, 100)
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+        closed = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
+        contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        label = "house_facade" if project_type == "housing" else "business_signage"
+        min_area = w * h * 0.02  # ignore regions < 2% of image
+        predictions = []
+        for cnt in sorted(contours, key=cv2.contourArea, reverse=True)[:5]:
+            if cv2.contourArea(cnt) < min_area:
+                continue
+            epsilon = 0.01 * cv2.arcLength(cnt, True)
+            approx = cv2.approxPolyDP(cnt, epsilon, True)
+            if len(approx) < 3:
+                continue
+            points = [
+                [round(float(pt[0][0]) / w * 100, 2), round(float(pt[0][1]) / h * 100, 2)]
+                for pt in approx
+            ]
+            predictions.append({"class": label, "points": points})
+
+        print(f"[OpenCV] {len(predictions)} contour regions for {project_type}")
+        return predictions
+    except Exception as e:
+        print(f"[OpenCV] Pre-annotation failed (non-blocking): {e}")
+        return []
+
+
+async def _sam_preannotations(image_url: str, project_type: str,
+                               img_w: int = 1024, img_h: int = 1024) -> list:
+    """Call SAM ML backend with 5-point auto-prompt. Returns predictions or [] on any failure."""
+    try:
+        import httpx
+        sam_url = os.getenv("SAM_ML_BACKEND_URL", "http://sam-ml-backend:9090")
+        label = "house_facade" if project_type == "housing" else "business_signage"
+
+        # Health check — fast timeout so we don't stall
+        async with httpx.AsyncClient(timeout=5.0) as hc:
+            health = await hc.get(f"{sam_url}/health")
+            if health.status_code != 200:
+                print(f"[SAM] Backend unhealthy ({health.status_code}), skipping.")
+                return []
+
+        # 5-point cross pattern: center + four quadrant midpoints
+        auto_points = [(50, 50), (25, 25), (75, 25), (25, 75), (75, 75)]
+        context_results = [
+            {
+                "type": "keypointlabels",
+                "value": {"x": x, "y": y, "keypointlabels": [label]},
+                "original_width": img_w,
+                "original_height": img_h,
+                "is_positive": 1,
+            }
+            for x, y in auto_points
+        ]
+        payload = {
+            "tasks": [{"id": 1, "data": {"image": image_url}}],
+            "context": {"result": context_results},
+        }
+
+        async with httpx.AsyncClient(timeout=30.0) as hc:
+            resp = await hc.post(f"{sam_url}/predict", json=payload)
+            resp.raise_for_status()
+            result = resp.json()
+
+        predictions = []
+        for pred in result:
+            for region in pred.get("result", []):
+                if region.get("type") == "polygonlabels":
+                    predictions.append({
+                        "class": label,
+                        "points": region["value"]["points"],
+                    })
+
+        print(f"[SAM] {len(predictions)} polygon regions for {project_type}")
+        return predictions
+    except Exception as e:
+        print(f"[SAM] Pre-annotation failed (non-blocking): {e}")
+        return []
+
+
+async def _get_image_preannotations(image_url: str, project_type: str) -> list:
+    """SAM → OpenCV fallback. Never raises, always returns a list."""
+    try:
+        predictions = await _sam_preannotations(image_url, project_type)
+        if predictions:
+            return predictions
+        print(f"[PreAnnotation] SAM empty for {project_type}, falling back to OpenCV.")
+        image_np = await asyncio.to_thread(_fetch_image_numpy, image_url)
+        if image_np is not None:
+            return await asyncio.to_thread(_opencv_preannotations, image_np, project_type)
+    except Exception as e:
+        print(f"[PreAnnotation] All methods failed (non-blocking): {e}")
+    return []
+
+
 async def run_jewelry_pipeline(
     blob_filename: str,
     client_code: str,
     original_filename: str,
     timestamp: str,
+    force_project_type: str = "auto",
 ):
     try:
         filename_lower = original_filename.lower()
-        is_housing = any(k in filename_lower for k in ["house", "housing", "facade", "building", "property", "home", "villa", "apartment"])
-        is_business = any(k in filename_lower for k in ["business", "store", "shop", "sign", "signboard", "license", "registration", "office", "retail"])
-
-        if is_housing:
+        
+        if force_project_type == "housing":
             project_type = "housing"
             project_name = "House Image Annotation"
-        elif is_business:
+        elif force_project_type == "business":
             project_type = "business"
             project_name = "Nature of Business"
-        else:
+        elif force_project_type == "jewelry":
             project_type = "jewelry"
             project_name = "Jewelry"
+        else:
+            project_type = await resolve_image_category(client_code, original_filename)
+            if project_type == "housing":
+                project_name = "House Image Annotation"
+            elif project_type == "business":
+                project_name = "Nature of Business"
+            else:
+                project_name = "Jewelry"
 
         print(f"Starting image pipeline ({project_name}) for {client_code}/{original_filename}")
         await update_log_status(client_code, original_filename, timestamp, "Processing Image")
@@ -1170,7 +1496,7 @@ async def run_jewelry_pipeline(
 
         predictions = []
         if project_type == "jewelry":
-            # 2. Trigger serverless RunPod prediction in a non-blocking threadpool
+            # 2a. RunPod inference for polygon pre-annotations
             print("Triggering RunPod jewelry classification model...")
             inference_result = await asyncio.to_thread(run_runpod_inference, image_url, task_type="jewelry")
             if inference_result.get("status") == "success":
@@ -1178,8 +1504,45 @@ async def run_jewelry_pipeline(
                 print(f"Jewelry inference complete: detected {len(predictions)} items.")
             else:
                 print(f"WARNING: RunPod inference failed: {inference_result.get('message')}. Proceeding with empty predictions.")
+
+            # 2b. Collateral duplicate detection (non-blocking — never stalls pipeline)
+            if predictions:
+                try:
+                    from collateral_detector import find_duplicates, generate_signature
+                    image_np = await asyncio.to_thread(_fetch_image_numpy, image_url)
+                    if image_np is not None:
+                        h_px, w_px = image_np.shape[:2]
+                        sigs = []
+                        for idx, pred in enumerate(predictions):
+                            sig = generate_signature(
+                                image_np, pred.get("points", []),
+                                pred.get("class", "Jewelry"), client_code,
+                                task_id=0, item_index=idx,
+                                image_file=original_filename,
+                                img_width=w_px, img_height=h_px,
+                            )
+                            if sig:
+                                sigs.append(sig)
+                        if sigs:
+                            matches = await asyncio.to_thread(find_duplicates, sigs)
+                            if matches:
+                                top = matches[0]
+                                warn = (f"Matches {top['matched_item']['image_file']} "
+                                        f"({top['similarity']:.0%} similar)")
+                                print(f"[Collateral] DUPLICATE DETECTED: {original_filename} — {warn}")
+                                await update_log_status(
+                                    client_code, original_filename, timestamp,
+                                    "Duplicate Detected", error=warn,
+                                )
+                            else:
+                                print(f"[Collateral] No duplicates found for {original_filename}.")
+                except Exception as cd_err:
+                    print(f"[Collateral] Detection skipped (non-blocking): {cd_err}")
         else:
-            print(f"Bypassing RunPod model for {project_type} image. Importing directly to Label Studio.")
+            # 2c. House / Business: SAM → OpenCV fallback pre-annotations
+            print(f"Generating pre-annotations for {project_type} via SAM → OpenCV fallback...")
+            predictions = await _get_image_preannotations(image_url, project_type)
+            print(f"Pre-annotation complete: {len(predictions)} regions for {project_type}.")
 
         await update_log_status(client_code, original_filename, timestamp, "Reviewing")
 
@@ -1390,6 +1753,7 @@ async def run_zip_batch_pipeline(
     original_filename: str,
     timestamp: str,
     batch_id: str,
+    category: str = "auto",
 ):
     try:
         print(f"Starting ZIP batch pipeline for {client_code}/{original_filename} (Batch ID: {batch_id})")
@@ -1510,7 +1874,8 @@ async def run_zip_batch_pipeline(
                         blob_filename=sub_blob_name,
                         client_code=client_code,
                         original_filename=sub_safe_filename,
-                        timestamp=sub_timestamp
+                        timestamp=sub_timestamp,
+                        force_project_type=category,
                     ))
                 else:
                     print(f"Unknown extension for {sub_safe_filename}, uploaded without processing.")

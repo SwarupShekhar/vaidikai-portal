@@ -327,6 +327,20 @@
             </div>
 
             <div class="field-group">
+                <label for="category-select">Annotation Task / Category</label>
+                <select id="category-select">
+                    <option value="auto">🔍 Auto-Detect (Based on file name & extension)</option>
+                    <option value="jewelry">💍 Jewelry Image Annotation</option>
+                    <option value="housing">🏠 House Image Annotation</option>
+                    <option value="business">💼 Nature of Business (Signboard / Licenses)</option>
+                    <option value="audio">🎙️ Audio Dialogue Transcription</option>
+                    <option value="transcript">📝 Text Dialogue Transcript</option>
+                    <option value="form">📄 Form Scans / Documents / KYC</option>
+                    <option value="clickstream">📊 Clickstream Sequence Logs</option>
+                </select>
+            </div>
+
+            <div class="field-group">
                 <label for="language-select">Primary Language of Content</label>
                 <select id="language-select">
                     <option value="en">English</option>
@@ -444,6 +458,7 @@
         formData.append('file', selectedFile);
         formData.append('upload_token', uploadToken);
         formData.append('language', document.getElementById('language-select').value);
+        formData.append('category', document.getElementById('category-select').value);
 
         try {
             // Simulate progress since fetch doesn't expose upload progress easily

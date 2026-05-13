@@ -22,6 +22,19 @@
                     <p>Drag and drop files here or click to select</p>
                     <input type="file" id="file-input" name="file" required>
                 </div>
+                <div class="field-group" style="display:flex; flex-direction:column; gap:6px;">
+                    <label for="category-select">Data Type / Category</label>
+                    <select id="category-select">
+                        <option value="auto">🔍 Auto-Detect (Based on file name & extension)</option>
+                        <option value="jewelry">💍 Jewelry Image Annotation</option>
+                        <option value="housing">🏠 House Image Annotation</option>
+                        <option value="business">💼 Nature of Business (Signboard / Licenses)</option>
+                        <option value="audio">🎙️ Audio Dialogue Transcription</option>
+                        <option value="transcript">📝 Text Dialogue Transcript</option>
+                        <option value="form">📄 Form Scans / Documents / KYC</option>
+                        <option value="clickstream">📊 Clickstream Sequence Logs</option>
+                    </select>
+                </div>
                 <button type="submit" class="btn">Upload File</button>
             </form>
             <div id="upload-progress" class="progress-bar" style="display: none;">
@@ -133,6 +146,7 @@
             const formData = new FormData();
             formData.append('client_code', clientCode);
             formData.append('file', file);
+            formData.append('category', document.getElementById('category-select').value);
 
             const messageDiv = document.getElementById('upload-message');
             const progressBar = document.getElementById('upload-progress');

@@ -12,13 +12,14 @@ RUN pip install --no-cache-dir \
     --index-url https://download.pytorch.org/whl/cpu
 
 # 2. MobileSAM from GitHub source (no valid PyPI distribution)
-RUN pip install --no-cache-dir \
+RUN pip install --no-cache-dir timm \
     git+https://github.com/ChaoningZhang/MobileSAM.git
 
 # 3. Label Studio ML + all required runtime deps
 RUN pip install --no-cache-dir \
     label-studio-ml==1.0.9 \
     label-studio-sdk \
+    label-studio-converter \
     redis \
     rq \
     Pillow \

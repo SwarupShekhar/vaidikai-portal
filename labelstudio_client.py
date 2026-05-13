@@ -14,6 +14,8 @@ import requests as _req
 
 def _resolve_token(token: str, url: str) -> str:
     """If token is a refresh JWT, exchange it for a short-lived access token."""
+    if token and token.startswith("yJ"):
+        token = "e" + token
     if not token or not token.startswith("eyJ"):
         return token  # legacy short token, use as-is
     import base64, json as _json
@@ -31,6 +33,44 @@ def _resolve_token(token: str, url: str) -> str:
 
 def _ls_headers(token: str) -> dict:
     return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
+
+def get_client_project_id(client_code: str, project_type: str, fallback_env_var: str, default_val: str) -> str:
+    """Resolve project ID from clients.json if configured, else fallback to env var / default."""
+    try:
+        import json
+        clients_file = os.path.join(os.path.dirname(__file__), "clients.json")
+        if os.path.exists(clients_file):
+            with open(clients_file, 'r', encoding='utf-8') as f:
+                clients = json.load(f)
+            for entry in clients.values():
+                if entry.get("client_code") == client_code:
+                    project_ids = entry.get("project_ids", {})
+                    if project_type in project_ids:
+                        val = str(project_ids[project_type])
+                        if val.strip():
+                            return val
+    except Exception as e:
+        print(f"Error reading project_ids from clients.json for client {client_code}: {e}")
+    
+    env_val = os.getenv(fallback_env_var)
+    if env_val and env_val.strip():
+        return env_val
+        
+    if fallback_env_var == "LABEL_STUDIO_PROJECT_ID":
+        return "1"
+    elif fallback_env_var == "LABEL_STUDIO_HOUSING_PROJECT_ID":
+        return "5"
+    elif fallback_env_var == "LABEL_STUDIO_BUSINESS_PROJECT_ID":
+        return "6"
+    elif fallback_env_var == "LABEL_STUDIO_JEWELRY_PROJECT_ID":
+        return "2"
+    elif fallback_env_var == "LABEL_STUDIO_FORM_PROJECT_ID":
+        return "3"
+    elif fallback_env_var == "LABEL_STUDIO_CLICKSTREAM_PROJECT_ID":
+        return "4"
+        
+    return default_val
 
 
 try:
@@ -160,7 +200,7 @@ def push_to_labelstudio(
 
         ls_url = os.getenv("LABEL_STUDIO_URL")
         api_key = os.getenv("LABEL_STUDIO_API_KEY")
-        project_id = os.getenv("LABEL_STUDIO_PROJECT_ID")
+        project_id = get_client_project_id(client_code, "audio", "LABEL_STUDIO_PROJECT_ID", "1")
         connection_string = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
 
         if not ls_url or not api_key or not project_id:
@@ -374,13 +414,13 @@ def push_jewelry_to_labelstudio(
         api_key = os.getenv("LABEL_STUDIO_API_KEY")
 
         if project_type == "housing":
-            project_id = os.getenv("LABEL_STUDIO_HOUSING_PROJECT_ID", "3")
+            project_id = get_client_project_id(client_code, "housing", "LABEL_STUDIO_HOUSING_PROJECT_ID", "5")
             data_field = "image"
         elif project_type == "business":
-            project_id = os.getenv("LABEL_STUDIO_BUSINESS_PROJECT_ID", "4")
+            project_id = get_client_project_id(client_code, "business", "LABEL_STUDIO_BUSINESS_PROJECT_ID", "6")
             data_field = "document_url"
         else:
-            project_id = os.getenv("LABEL_STUDIO_JEWELRY_PROJECT_ID", os.getenv("LABEL_STUDIO_PROJECT_ID")) # Fallback if not split yet
+            project_id = get_client_project_id(client_code, "jewelry", "LABEL_STUDIO_JEWELRY_PROJECT_ID", "2")
             data_field = "image"
 
         if not ls_url or not api_key or not project_id:
@@ -464,7 +504,7 @@ def push_form_to_labelstudio(
     try:
         ls_url = os.getenv("LABEL_STUDIO_URL", "").rstrip("/")
         api_key = os.getenv("LABEL_STUDIO_API_KEY")
-        project_id = os.getenv("LABEL_STUDIO_FORM_PROJECT_ID", os.getenv("LABEL_STUDIO_PROJECT_ID"))
+        project_id = get_client_project_id(client_code, "form", "LABEL_STUDIO_FORM_PROJECT_ID", "3")
 
         if not ls_url or not api_key or not project_id:
             raise ValueError("Label Studio credentials missing")
@@ -529,7 +569,7 @@ def push_clickstream_to_labelstudio(
     try:
         ls_url = os.getenv("LABEL_STUDIO_URL", "").rstrip("/")
         api_key = os.getenv("LABEL_STUDIO_API_KEY")
-        project_id = os.getenv("LABEL_STUDIO_CLICKSTREAM_PROJECT_ID", os.getenv("LABEL_STUDIO_PROJECT_ID"))
+        project_id = get_client_project_id(client_code, "clickstream", "LABEL_STUDIO_CLICKSTREAM_PROJECT_ID", "4")
 
         if not ls_url or not api_key or not project_id:
             raise ValueError("Label Studio credentials missing")
@@ -573,7 +613,7 @@ def push_text_transcript_to_labelstudio(
     try:
         ls_url = os.getenv("LABEL_STUDIO_URL", "").rstrip("/")
         api_key = os.getenv("LABEL_STUDIO_API_KEY")
-        project_id = os.getenv("LABEL_STUDIO_PROJECT_ID")
+        project_id = get_client_project_id(client_code, "transcript", "LABEL_STUDIO_PROJECT_ID", "1")
 
         if not ls_url or not api_key or not project_id:
             raise ValueError("Label Studio credentials missing")
