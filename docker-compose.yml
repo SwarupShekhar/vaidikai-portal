@@ -21,6 +21,8 @@ services:
       - ./labelstudio-data:/label-studio/data
     environment:
       - LABEL_STUDIO_LOCAL_FILES_SERVING_ENABLED=true
+      - LABEL_STUDIO_HOST=https://annotate.vaidik.ai
+      - CSRF_TRUSTED_ORIGINS=https://annotate.vaidik.ai,http://annotate.vaidik.ai
     restart: always
     networks:
       - vaidikai-network
