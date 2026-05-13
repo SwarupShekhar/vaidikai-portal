@@ -443,7 +443,12 @@
                     row.innerHTML = `
                         <td>${file.name}</td>
                         <td>${completedOn}</td>
-                        <td><button class="btn-small" onclick="downloadFile('${file.name}')">Download</button></td>
+                        <td>
+                            <div style="display: flex; gap: 8px;">
+                                <button class="btn-small" onclick="downloadFile('${file.name}')">Download</button>
+                                <button class="btn-small btn-secondary" onclick="copyShareLink('${file.name}', this)">Copy Link</button>
+                            </div>
+                        </td>
                     `;
                     downloadsTbody.appendChild(row);
                 });
@@ -552,6 +557,39 @@
                 window.open(data.download_url, '_blank');
             } catch (error) {
                 alert('Download failed. Please try again.');
+            }
+        }
+
+        // Copy Share Link
+        async function copyShareLink(filename, btn) {
+            const originalText = btn.textContent;
+            btn.textContent = 'Generating...';
+            btn.disabled = true;
+            try {
+                const response = await fetch(`/api/download/${clientCode}/${filename}`);
+                if (!response.ok) throw new Error('Failed to get download URL');
+                const data = await response.json();
+                
+                await navigator.clipboard.writeText(data.download_url);
+                btn.textContent = 'Copied! ✨';
+                btn.style.background = 'rgba(76, 175, 80, 0.2)';
+                btn.style.borderColor = '#4CAF50';
+                btn.style.color = '#4CAF50';
+                
+                setTimeout(() => {
+                    btn.textContent = originalText;
+                    btn.disabled = false;
+                    btn.style.background = '';
+                    btn.style.borderColor = '';
+                    btn.style.color = '';
+                }, 2000);
+            } catch (error) {
+                console.error("Error sharing link:", error);
+                btn.textContent = 'Error';
+                setTimeout(() => {
+                    btn.textContent = originalText;
+                    btn.disabled = false;
+                }, 2000);
             }
         }
 

@@ -366,12 +366,22 @@ def push_jewelry_to_labelstudio(
     original_filename: str,
     client_code: str,
     predictions: list,
+    project_type: str = "jewelry"
 ) -> dict:
-    """Push processed jewelry image and pre-annotated bounding boxes to Label Studio."""
+    """Push processed image and pre-annotated bounding boxes to Label Studio."""
     try:
         ls_url = os.getenv("LABEL_STUDIO_URL", "").rstrip("/")
         api_key = os.getenv("LABEL_STUDIO_API_KEY")
-        project_id = os.getenv("LABEL_STUDIO_JEWELRY_PROJECT_ID", os.getenv("LABEL_STUDIO_PROJECT_ID")) # Fallback if not split yet
+
+        if project_type == "housing":
+            project_id = os.getenv("LABEL_STUDIO_HOUSING_PROJECT_ID", "3")
+            data_field = "image"
+        elif project_type == "business":
+            project_id = os.getenv("LABEL_STUDIO_BUSINESS_PROJECT_ID", "4")
+            data_field = "document_url"
+        else:
+            project_id = os.getenv("LABEL_STUDIO_JEWELRY_PROJECT_ID", os.getenv("LABEL_STUDIO_PROJECT_ID")) # Fallback if not split yet
+            data_field = "image"
 
         if not ls_url or not api_key or not project_id:
             raise ValueError("Label Studio credentials missing")
@@ -406,28 +416,30 @@ def push_jewelry_to_labelstudio(
             results.append({
                 "id": region_id,
                 "from_name": "label",
-                "to_name": "image",
+                "to_name": "image" if project_type != "business" else "document",
                 "type": "polygonlabels",
                 "value": {
                     "points": points,
-                    "polygonlabels": [pred.get("class", "Jewelry")]
+                    "polygonlabels": [pred.get("class", "Jewelry" if project_type == "jewelry" else "house_facade")]
                 }
             })
 
         task_payload = {
             "data": {
-                "image": image_sas,
+                data_field: image_sas,
                 "filename": original_filename,
                 "client_code": client_code,
-            },
-            "annotations": [
+            }
+        }
+
+        if results:
+            task_payload["annotations"] = [
                 {
                     "result": results,
                     "was_cancelled": False,
                     "ground_truth": False
                 }
             ]
-        }
 
         r = _req.post(f"{ls_url}/api/projects/{project_id}/import", json=[task_payload], headers=headers, timeout=30)
         r.raise_for_status()
@@ -438,7 +450,7 @@ def push_jewelry_to_labelstudio(
         return {"status": "success", "task_id": task_id, "predictions_count": len(predictions)}
 
     except Exception as e:
-        error_msg = f"Error pushing jewelry to Label Studio: {str(e)}"
+        error_msg = f"Error pushing image to Label Studio ({project_type}): {str(e)}"
         print(error_msg)
         return {"status": "error", "error": error_msg}
 

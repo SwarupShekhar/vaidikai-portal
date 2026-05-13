@@ -1144,35 +1144,73 @@ async def run_jewelry_pipeline(
     timestamp: str,
 ):
     try:
-        print(f"Starting jewelry classification pipeline for {client_code}/{original_filename}")
+        filename_lower = original_filename.lower()
+        is_housing = any(k in filename_lower for k in ["house", "housing", "facade", "building", "property", "home", "villa", "apartment"])
+        is_business = any(k in filename_lower for k in ["business", "store", "shop", "sign", "signboard", "license", "registration", "office", "retail"])
+
+        if is_housing:
+            project_type = "housing"
+            project_name = "House Image Annotation"
+        elif is_business:
+            project_type = "business"
+            project_name = "Nature of Business"
+        else:
+            project_type = "jewelry"
+            project_name = "Jewelry"
+
+        print(f"Starting image pipeline ({project_name}) for {client_code}/{original_filename}")
         await update_log_status(client_code, original_filename, timestamp, "Processing Image")
 
-        # 1. Get secure SAS URL for RunPod
+        # 1. Get secure SAS URL for RunPod / Label Studio
         image_url = generate_sas_url(original_filename, client_code)
         
         # Redact the security signature token when printing to container logs
         clean_log_url = image_url.split("?")[0]
         print(f"Generated secure image url: {clean_log_url}")
 
-        # 2. Trigger serverless RunPod prediction in a non-blocking threadpool
-        inference_result = await asyncio.to_thread(run_runpod_inference, image_url, task_type="jewelry")
-        
-        if inference_result.get("status") == "success":
-            await update_log_status(client_code, original_filename, timestamp, "Reviewing")
-            predictions = inference_result.get("predictions", [])
-            print(f"Inference complete: detected {len(predictions)} items.")
-
-            # 3. Push bounding boxes to Label Studio inside a non-blocking threadpool
-            ls_result = await asyncio.to_thread(push_jewelry_to_labelstudio, original_filename, client_code, predictions)
-            if ls_result.get("status") == "success":
-                await update_log_status(client_code, original_filename, timestamp, "In Review", predictions_count=len(predictions))
+        predictions = []
+        if project_type == "jewelry":
+            # 2. Trigger serverless RunPod prediction in a non-blocking threadpool
+            print("Triggering RunPod jewelry classification model...")
+            inference_result = await asyncio.to_thread(run_runpod_inference, image_url, task_type="jewelry")
+            if inference_result.get("status") == "success":
+                predictions = inference_result.get("predictions", [])
+                print(f"Jewelry inference complete: detected {len(predictions)} items.")
             else:
-                await update_log_status(client_code, original_filename, timestamp, "Failed (Label Studio)", error=ls_result.get("error"))
+                print(f"WARNING: RunPod inference failed: {inference_result.get('message')}. Proceeding with empty predictions.")
         else:
-            await update_log_status(client_code, original_filename, timestamp, "Failed (Inference)", error=inference_result.get("message"))
+            print(f"Bypassing RunPod model for {project_type} image. Importing directly to Label Studio.")
+
+        await update_log_status(client_code, original_filename, timestamp, "Reviewing")
+
+        # 3. Push to Label Studio inside a non-blocking threadpool
+        ls_result = await asyncio.to_thread(
+            push_jewelry_to_labelstudio, 
+            original_filename, 
+            client_code, 
+            predictions,
+            project_type
+        )
+        
+        if ls_result.get("status") == "success":
+            await update_log_status(
+                client_code, 
+                original_filename, 
+                timestamp, 
+                "In Review", 
+                predictions_count=len(predictions)
+            )
+        else:
+            await update_log_status(
+                client_code, 
+                original_filename, 
+                timestamp, 
+                "Failed (Label Studio)", 
+                error=ls_result.get("error")
+            )
 
     except Exception as e:
-        print(f"Jewelry pipeline error: {str(e)}")
+        print(f"Image pipeline error: {str(e)}")
         try:
             await update_log_status(client_code, original_filename, timestamp, "Error", error=str(e))
         except Exception:
