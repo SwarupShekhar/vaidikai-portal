@@ -6,19 +6,16 @@ RUN apt-get update && apt-get install -y \
     wget git libgl1 libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
-# 1. Pin numpy<2 FIRST — torch 2.1.0 is not compatible with numpy 2.x
-RUN pip install --no-cache-dir "numpy<2"
-
-# 2. PyTorch CPU (needs its own index URL)
+# 1. PyTorch CPU (needs its own index URL)
 RUN pip install --no-cache-dir \
     torch==2.1.0 torchvision==0.16.0 \
     --index-url https://download.pytorch.org/whl/cpu
 
-# 3. MobileSAM from GitHub source (no valid PyPI distribution)
+# 2. MobileSAM from GitHub source (no valid PyPI distribution)
 RUN pip install --no-cache-dir \
     git+https://github.com/ChaoningZhang/MobileSAM.git
 
-# 4. Label Studio ML + all required runtime deps
+# 3. Label Studio ML + all required runtime deps
 RUN pip install --no-cache-dir \
     label-studio-ml==1.0.9 \
     label-studio-sdk \
@@ -27,8 +24,14 @@ RUN pip install --no-cache-dir \
     Pillow \
     opencv-python-headless
 
+# 4. FORCE numpy<2 LAST — torch 2.1.0 crashes with numpy 2.x
+#    Previous installs may have pulled in numpy 2.x; this overrides it.
+RUN pip install --no-cache-dir "numpy<2"
+
 RUN mkdir -p /data/models
-COPY sam_backend.py /app/sam_backend.py
+
+# Copy the model as a DIRECTORY module (label-studio-ml expects a dir, not a file)
+COPY sam_model/ /app/sam_model/
 
 EXPOSE 9090
 
@@ -38,4 +41,5 @@ ENV LOG_LEVEL=DEBUG
 ENV WORKERS=1
 ENV THREADS=4
 
-CMD ["label-studio-ml", "start", "/app/sam_backend.py", "--host", "0.0.0.0", "--port", "9090"]
+# Point to the DIRECTORY, not a .py file
+CMD ["label-studio-ml", "start", "/app/sam_model", "--host", "0.0.0.0", "--port", "9090"]
