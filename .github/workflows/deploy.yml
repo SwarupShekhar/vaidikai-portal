@@ -19,53 +19,83 @@ jobs:
           chmod 600 ~/.ssh/vultr
           ssh-keyscan -H ${{ secrets.VULTR_IP }} >> ~/.ssh/known_hosts
 
-
-
       - name: Deploy via SSH
         run: |
-          ssh -i ~/.ssh/vultr deploy@${{ secrets.VULTR_IP }} << 'EOF'
+          ssh -i ~/.ssh/vultr -o StrictHostKeyChecking=no deploy@${{ secrets.VULTR_IP }} << 'EOF'
             set -e
-            cd /opt/vaidikai-portal/vaidikai-portal
 
-            echo "📦 Pulling latest code..."
-            git pull origin main
+            REPO_URL="https://github.com/SwarupShekhar/vaidikai-portal.git"
+            DEPLOY_DIR="/opt/vaidikai-portal/vaidikai-portal"
+
+            # ── Clone on first run, pull on subsequent runs ──────────────
+            if [ ! -d "$DEPLOY_DIR/.git" ]; then
+              echo "📥 First deploy — cloning repository..."
+              git clone "$REPO_URL" "$DEPLOY_DIR"
+            else
+              echo "📦 Pulling latest code..."
+              cd "$DEPLOY_DIR"
+              git pull origin main
+            fi
+
+            cd "$DEPLOY_DIR"
+
+            # ── Ensure .env exists ───────────────────────────────────────
+            if [ ! -f .env ]; then
+              echo "⚠️  WARNING: .env file not found!"
+              echo "   Please create it manually: nano $DEPLOY_DIR/.env"
+              exit 1
+            fi
+
+            # ── Detect docker compose command ────────────────────────────
+            if command -v docker-compose &>/dev/null; then
+              DC="docker-compose"
+            else
+              DC="docker compose"
+            fi
+            echo "🐳 Using: $DC"
 
             echo "🛑 Stopping old containers..."
-            docker-compose down
+            $DC down || true
 
             echo "🔨 Building new images..."
-            docker-compose build --no-cache
+            $DC build --no-cache
 
             echo "🚀 Starting services..."
-            docker-compose up -d
+            $DC up -d
 
             echo "⏳ Waiting for health checks (30s)..."
             sleep 30
 
-            # Health check portal
-            if curl -f http://localhost:4005/health; then
+            # ── Health checks ────────────────────────────────────────────
+            ERRORS=0
+
+            if curl -sf http://localhost:4005/health > /dev/null 2>&1; then
               echo "✅ Portal (port 4005) is healthy"
             else
-              echo "❌ Portal failed health check"
-              docker-compose logs --tail=50 vaidikai-portal
-              exit 1
+              echo "❌ Portal (port 4005) failed health check"
+              $DC logs --tail=30 vaidikai-portal
+              ERRORS=$((ERRORS+1))
             fi
 
-            # Health check Label Studio
-            if curl -f http://localhost:4006/health; then
+            if curl -sf http://localhost:4006/health > /dev/null 2>&1; then
               echo "✅ Label Studio (port 4006) is healthy"
             else
-              echo "❌ Label Studio failed health check"
-              docker-compose logs --tail=50 labelstudio
-              exit 1
+              echo "❌ Label Studio (port 4006) failed health check"
+              $DC logs --tail=30 labelstudio
+              ERRORS=$((ERRORS+1))
             fi
 
-            # Health check SAM ML Backend
-            if curl -f http://localhost:4007/health; then
+            if curl -sf http://localhost:4007/health > /dev/null 2>&1; then
               echo "✅ SAM ML Backend (port 4007) is healthy"
             else
-              echo "❌ SAM ML Backend failed health check"
-              docker-compose logs --tail=50 sam-ml-backend
+              echo "❌ SAM ML Backend (port 4007) failed health check"
+              $DC logs --tail=30 sam-ml-backend
+              ERRORS=$((ERRORS+1))
+            fi
+
+            if [ $ERRORS -gt 0 ]; then
+              echo ""
+              echo "⚠️  $ERRORS service(s) failed health checks"
               exit 1
             fi
 
@@ -73,9 +103,10 @@ jobs:
             echo "🎉 Deployment successful!"
             echo ""
             echo "Service URLs:"
-            echo "  Portal:       http://${{ secrets.VULTR_IP }}:4005"
-            echo "  Label Studio: http://${{ secrets.VULTR_IP }}:4006"
-            echo "  SAM ML:       http://${{ secrets.VULTR_IP }}:4007"
+            SERVER_IP=$(curl -s ifconfig.me)
+            echo "  Portal:       http://$SERVER_IP:4005"
+            echo "  Label Studio: http://$SERVER_IP:4006"
+            echo "  SAM ML:       http://$SERVER_IP:4007"
           EOF
 
       - name: Notify success
