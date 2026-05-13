@@ -152,6 +152,11 @@ def _next_client_code(clients: dict) -> str:
         n += 1
 
 
+@app.get("/health")
+async def health_check():
+    return {"status": "healthy"}
+
+
 @app.get("/access/{token}")
 async def access(token: str):
     """Legacy internal access — redirects to Project Manager dashboard."""

@@ -19,6 +19,7 @@ RUN pip install --no-cache-dir \
 RUN pip install --no-cache-dir \
     label-studio-ml==1.0.9 \
     label-studio-sdk \
+    redis \
     Pillow \
     numpy \
     opencv-python-headless
