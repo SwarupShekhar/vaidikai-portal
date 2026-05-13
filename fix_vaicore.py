@@ -57,7 +57,12 @@ def main():
 
     # Normalize url
     ls_url = ls_url.rstrip("/")
-    api_urls = [ls_url, "https://annotate.vaidik.ai"]
+    
+    # CRITICAL: Since vaidikai-portal runs inside Docker, it must communicate with Label Studio
+    # via the docker-network address: http://labelstudio:8080 (NOT localhost/127.0.0.1).
+    docker_ls_url = "http://labelstudio:8080"
+    
+    api_urls = [docker_ls_url, "https://annotate.vaidik.ai", ls_url]
 
     print(f"DEBUG: Found token starting with: '{corrupt_token[:10]}...'")
     
@@ -188,7 +193,7 @@ def main():
                     print(f"   ✅ Found existing Business project with ID: {business_id}")
                     break
 
-        # Update env content lines
+        # Update env content lines for project IDs
         if "LABEL_STUDIO_HOUSING_PROJECT_ID" in env_content:
             env_content = re.sub(r"LABEL_STUDIO_HOUSING_PROJECT_ID\s*=\s*[^\n]+", f"LABEL_STUDIO_HOUSING_PROJECT_ID={housing_id}", env_content)
         else:
@@ -199,10 +204,18 @@ def main():
         else:
             env_content += f"\nLABEL_STUDIO_BUSINESS_PROJECT_ID={business_id}"
 
-    # 4. Save fixed env content
+    # 4. Save fixed env content (including token and URL fixes)
     if is_corrupt:
         env_content = env_content.replace(corrupt_token, fixed_token)
         
+    # Correct the URL connection parameter for secure container-to-container network
+    if url_match:
+        current_url_line = url_match.group(0)
+        # Change 127.0.0.1 or localhost to 'labelstudio:8080'
+        if "127.0.0.1" in current_url_line or "localhost" in current_url_line:
+            print(f"⚠️  NETWORKING UPDATE: Changing Label Studio URL in .env to the internal Docker network address: {docker_ls_url}")
+            env_content = env_content.replace(current_url_line, f"LABEL_STUDIO_URL={docker_ls_url}")
+            
     with open(env_path, "w", encoding="utf-8") as f:
         f.write(env_content)
     
@@ -210,9 +223,10 @@ def main():
     print("              ✨ FIXES APPLIED ✨             ")
     print("==============================================")
     print("1. Fixed missing leading 'e' in Label Studio API key.")
+    print(f"2. Updated Label Studio URL to the internal Docker network: {docker_ls_url}")
     if connected:
-        print(f"2. Checked/Created 'House Image Annotation' (ID: {housing_id}).")
-        print(f"3. Checked/Created 'Nature of Business' (ID: {business_id}).")
+        print(f"3. Checked/Created 'House Image Annotation' (ID: {housing_id}).")
+        print(f"4. Checked/Created 'Nature of Business' (ID: {business_id}).")
     print("\n👉 Please restart your containers now to apply changes:")
     print("   docker compose down")
     print("   docker compose up -d")
