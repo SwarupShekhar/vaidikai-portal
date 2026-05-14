@@ -92,19 +92,36 @@ def export_and_deliver(
                         headers=headers,
                         timeout=20
                     )
-                    if r.status_code == 200:
-                        all_tasks = r.json()
+                    all_tasks = r.json() if r.status_code == 200 else []
+                    matched = [
+                        t for t in all_tasks
+                        if t.get("data", {}).get("client_code") == client_code
+                        and t.get("data", {}).get("filename") == original_filename
+                        and len(t.get("annotations", [])) > 0
+                    ]
+                    if not matched:
+                        # Fallback to /api/tasks to catch unsubmitted/imported pre-annotations
+                        tr = requests.get(
+                            f"{ls_url}/api/tasks",
+                            params={"project": pid, "page_size": 1000},
+                            headers=headers,
+                            timeout=20
+                        )
+                        tasks_list = tr.json() if tr.status_code == 200 else []
+                        if isinstance(tasks_list, dict):
+                            tasks_list = tasks_list.get("tasks", [])
                         matched = [
-                            t for t in all_tasks
+                            t for t in tasks_list
                             if t.get("data", {}).get("client_code") == client_code
                             and t.get("data", {}).get("filename") == original_filename
-                            and len(t.get("annotations", [])) > 0
+                            and (t.get("total_annotations", 0) > 0 or len(t.get("annotations", [])) > 0)
                         ]
-                        if matched:
-                            print(f"Found {len(matched)} annotated tasks via bulk export in project {pid}")
-                            matched_tasks = matched
-                            project_id = pid
-                            break
+                        
+                    if matched:
+                        print(f"Found {len(matched)} candidate tasks in project {pid}")
+                        matched_tasks = matched
+                        project_id = pid
+                        break
                 except Exception as ex:
                     print(f"Error checking project {pid}: {ex}")
 
@@ -122,6 +139,14 @@ def export_and_deliver(
         annotators = set()
         languages = set()
 
+        is_audio = str(project_id) == os.getenv("LABEL_STUDIO_AUDIO_PROJECT_ID", "1")
+        is_jewelry = str(project_id) == os.getenv("LABEL_STUDIO_JEWELRY_PROJECT_ID", "2")
+        is_form = str(project_id) == os.getenv("LABEL_STUDIO_FORM_PROJECT_ID", "3")
+        is_clickstream = str(project_id) == os.getenv("LABEL_STUDIO_CLICKSTREAM_PROJECT_ID", "4")
+        is_housing = str(project_id) == os.getenv("LABEL_STUDIO_HOUSING_PROJECT_ID", "5")
+        is_business = str(project_id) == os.getenv("LABEL_STUDIO_BUSINESS_PROJECT_ID", "6")
+        is_image_project = is_jewelry or is_housing or is_business
+
         for task in matched_tasks:
             task_data = task.get("data", {})
             task_lang = task_data.get("language", "Unknown")
@@ -133,13 +158,7 @@ def export_and_deliver(
                 
                 result = annotation.get("result", [])
 
-                # For Audio Project, enforce manual review status. For Jewelry, accept all non-cancelled.
-                is_jewelry = str(project_id) == os.getenv("LABEL_STUDIO_JEWELRY_PROJECT_ID", "2")
-                is_housing = str(project_id) == os.getenv("LABEL_STUDIO_HOUSING_PROJECT_ID", "5")
-                is_business = str(project_id) == os.getenv("LABEL_STUDIO_BUSINESS_PROJECT_ID", "6")
-                is_image_project = is_jewelry or is_housing or is_business
-                
-                if not is_image_project:
+                if is_audio:
                     manual_status = "Pending"
                     for r_item in result:
                         if r_item.get("from_name") == "review_status":
@@ -180,7 +199,52 @@ def export_and_deliver(
                                 "Points": points,
                                 "RType": rtype
                             })
-                else:
+                elif is_clickstream:
+                    session_status = "Smooth Journey"
+                    friction_types = "None"
+                    summary_text = ""
+                    journey_intent = "Unknown"
+                    journey_outcome = "Unknown"
+                    root_cause = "None"
+
+                    for r_item in result:
+                        fn = r_item.get("from_name", "")
+                        val = r_item.get("value", {})
+                        if fn == "session_status":
+                            session_status = val.get("choices", [session_status])[0]
+                        elif fn == "friction_types":
+                            friction_types = ", ".join(val.get("choices", ["None"]))
+                        elif fn == "summary":
+                            summary_text = val.get("text", [""])[0]
+                        elif fn == "journey_intent":
+                            journey_intent = val.get("choices", [journey_intent])[0]
+                        elif fn == "journey_outcome":
+                            journey_outcome = val.get("choices", [journey_outcome])[0]
+                        elif fn == "root_cause":
+                            root_cause = val.get("choices", [root_cause])[0]
+
+                    segments.append({
+                        "Session File": original_filename,
+                        "Status": session_status,
+                        "Friction Detected": friction_types,
+                        "AI Summary": summary_text,
+                        "User Intent": journey_intent,
+                        "Outcome": journey_outcome,
+                        "Root Cause": root_cause
+                    })
+                elif is_form:
+                    extracted_text = ""
+                    for r_item in result:
+                        fn = r_item.get("from_name", "")
+                        val = r_item.get("value", {})
+                        if fn == "extracted_text":
+                            extracted_text = val.get("text", [""])[0]
+
+                    segments.append({
+                        "Form File": original_filename,
+                        "Extracted OCR Text": extracted_text
+                    })
+                elif is_audio:
                     regions = {}
                     for r_item in result:
                         rid = r_item.get("id")
@@ -224,11 +288,6 @@ def export_and_deliver(
                             "Audio File": original_filename
                         })
 
-        is_jewelry = str(project_id) == os.getenv("LABEL_STUDIO_JEWELRY_PROJECT_ID", "2")
-        is_housing = str(project_id) == os.getenv("LABEL_STUDIO_HOUSING_PROJECT_ID", "5")
-        is_business = str(project_id) == os.getenv("LABEL_STUDIO_BUSINESS_PROJECT_ID", "6")
-        is_image_project = is_jewelry or is_housing or is_business
-        
         final_segments = []
         if is_image_project:
             for i, seg in enumerate(segments):
@@ -270,7 +329,38 @@ def export_and_deliver(
             summary_values_list.append(["Annotated By", annotators_str])
             summary_values_list.append(["Export Date", datetime.now().strftime("%Y-%m-%d %H:%M:%S")])
             
-        else:
+        elif is_clickstream:
+            for i, seg in enumerate(segments):
+                final_segments.append({
+                    "Session #": i + 1,
+                    "Session File": seg["Session File"],
+                    "Status": seg["Status"],
+                    "Friction Detected": seg["Friction Detected"],
+                    "AI Summary": seg["AI Summary"],
+                    "User Intent": seg["User Intent"],
+                    "Outcome": seg["Outcome"],
+                    "Root Cause": seg["Root Cause"]
+                })
+            columns = ["Session #", "Session File", "Status", "Friction Detected", "AI Summary", "User Intent", "Outcome", "Root Cause"]
+            summary_headers = ["Analytics Overview", "Total Count"]
+            summary_values_list = [
+                ["Total Sessions Analyzed", len(segments)],
+                ["Export Date", datetime.now().strftime("%Y-%m-%d %H:%M:%S")]
+            ]
+        elif is_form:
+            for i, seg in enumerate(segments):
+                final_segments.append({
+                    "Scan #": i + 1,
+                    "Form File": seg["Form File"],
+                    "Extracted OCR Text": seg["Extracted OCR Text"]
+                })
+            columns = ["Scan #", "Form File", "Extracted OCR Text"]
+            summary_headers = ["Form Processing Overview", "Total Count"]
+            summary_values_list = [
+                ["Total Forms Processed", len(segments)],
+                ["Export Date", datetime.now().strftime("%Y-%m-%d %H:%M:%S")]
+            ]
+        elif is_audio:
             segments.sort(key=lambda x: x.get("Start Time (s)", 0))
             for i, seg in enumerate(segments):
                 seg["Segment #"] = i + 1
@@ -292,7 +382,6 @@ def export_and_deliver(
 
             columns = ["Segment #", "Speaker", "Start Time (s)", "End Time (s)", "Duration (s)", transcript_col, "Language", "Audio File"]
             
-            # Audio Summary
             total_duration_secs = sum(s["Duration (s)"] for s in segments)
             unique_speakers = sorted(list(set(s["Speaker"] for s in segments)))
             summary_headers = ["Language", "Total Segments", "Total Duration (mins)", "Speakers", "Annotated By", "Export Date"]
