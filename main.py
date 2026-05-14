@@ -23,8 +23,45 @@ from labelstudio_client import (
     push_form_to_labelstudio,
     push_clickstream_to_labelstudio,
     push_text_transcript_to_labelstudio,
-    generate_sas_url
+    generate_sas_url,
+    get_client_project_id
 )
+
+def get_project_id_for_file(client_code: str, filename: str) -> str:
+    try:
+        with open("upload_log.json", "r") as f:
+            logs = json.load(f)
+        for log in reversed(logs):
+            if log.get("client_code") == client_code and log.get("filename") == filename:
+                cat = log.get("category")
+                if cat in ("audio", "transcript"):
+                    return get_client_project_id(client_code, cat, "LABEL_STUDIO_PROJECT_ID", "1")
+                elif cat == "jewelry":
+                    return get_client_project_id(client_code, cat, "LABEL_STUDIO_JEWELRY_PROJECT_ID", "2")
+                elif cat == "housing":
+                    return get_client_project_id(client_code, cat, "LABEL_STUDIO_HOUSING_PROJECT_ID", "5")
+                elif cat == "business":
+                    return get_client_project_id(client_code, cat, "LABEL_STUDIO_BUSINESS_PROJECT_ID", "6")
+                elif cat == "form":
+                    return get_client_project_id(client_code, cat, "LABEL_STUDIO_FORM_PROJECT_ID", "3")
+                elif cat == "clickstream":
+                    return get_client_project_id(client_code, cat, "LABEL_STUDIO_CLICKSTREAM_PROJECT_ID", "4")
+    except Exception:
+        pass
+
+    fn_lower = filename.lower()
+    if any(fn_lower.endswith(ext) for ext in [".mp3", ".wav", ".m4a", ".ogg", ".flac"]):
+        return get_client_project_id(client_code, "audio", "LABEL_STUDIO_PROJECT_ID", "1")
+    if any(kw in fn_lower for kw in ["clickstream", "session", "log"]):
+        return get_client_project_id(client_code, "clickstream", "LABEL_STUDIO_CLICKSTREAM_PROJECT_ID", "4")
+    if any(kw in fn_lower for kw in ["form", "invoice", "aadhaar", "pan", "kyc", "personal", ".pdf", ".docx"]):
+        return get_client_project_id(client_code, "form", "LABEL_STUDIO_FORM_PROJECT_ID", "3")
+    if any(kw in fn_lower for kw in ["house", "home", "roof", "building"]):
+        return get_client_project_id(client_code, "housing", "LABEL_STUDIO_HOUSING_PROJECT_ID", "5")
+    if any(kw in fn_lower for kw in ["signboard", "license", "shop", "store", "business"]):
+        return get_client_project_id(client_code, "business", "LABEL_STUDIO_BUSINESS_PROJECT_ID", "6")
+    
+    return get_client_project_id(client_code, "jewelry", "LABEL_STUDIO_JEWELRY_PROJECT_ID", "2")
 from runpod_client import run_runpod_inference
 from redactor import mask_text_data
 from ocr_fallback import local_ocr_scan
@@ -408,6 +445,7 @@ async def _run_upload_pipeline(background_tasks: BackgroundTasks, file: UploadFi
         "file_size": file_size,
         "timestamp": timestamp,
         "status": "Processing ZIP" if is_zip else "Uploaded",
+        "category": category,
     }
     if is_zip:
         log_entry["batch_id"] = batch_id
@@ -696,9 +734,7 @@ async def get_annotation_status(
 ):
     await verify_client_or_admin(client_code, vaicore_session, vaicore_admin)
 
-    project_id = os.getenv("LABEL_STUDIO_JEWELRY_PROJECT_ID", "2")
-    if not project_id:
-        return {"status": "error", "message": "LABEL_STUDIO_JEWELRY_PROJECT_ID not configured"}
+    project_id = get_project_id_for_file(client_code, filename)
 
     status = await asyncio.to_thread(check_annotation_status, client_code, project_id, filename)
     return status
@@ -714,9 +750,7 @@ async def export_results(
 ):
     await verify_client_or_admin(client_code, vaicore_session, vaicore_admin)
 
-    project_id = os.getenv("LABEL_STUDIO_JEWELRY_PROJECT_ID", "2")
-    if not project_id:
-        return {"status": "error", "message": "LABEL_STUDIO_JEWELRY_PROJECT_ID not configured"}
+    project_id = get_project_id_for_file(client_code, filename)
 
     try:
         result = await asyncio.to_thread(export_and_deliver, client_code, filename, project_id, internal_export=internal)
@@ -777,8 +811,6 @@ async def package_delivery(
     if not client_code or not filenames:
         raise HTTPException(status_code=400, detail="client_code and filenames are required")
 
-    project_id = os.getenv("LABEL_STUDIO_JEWELRY_PROJECT_ID", "2")
-
     zip_buffer = io.BytesIO()
     exported_files = []
     errors = []
@@ -786,6 +818,7 @@ async def package_delivery(
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
         for filename in filenames:
             try:
+                project_id = get_project_id_for_file(client_code, filename)
                 # Export this file’s annotations from Label Studio
                 result = await asyncio.to_thread(
                     export_and_deliver, client_code, filename, project_id
@@ -854,9 +887,7 @@ async def export_results_force(
     """Force delivery despite duplicate collateral warnings (admin override)."""
     _check_admin(vaicore_admin)
 
-    project_id = os.getenv("LABEL_STUDIO_JEWELRY_PROJECT_ID", "2")
-    if not project_id:
-        return {"status": "error", "message": "LABEL_STUDIO_JEWELRY_PROJECT_ID not configured"}
+    project_id = get_project_id_for_file(client_code, filename)
 
     try:
         result = await asyncio.to_thread(
@@ -971,8 +1002,6 @@ async def admin_get_pipeline(vaicore_admin: str = Cookie(None)):
         
         # Limit to last 50 for performance
         pipeline = []
-        project_id = os.getenv("LABEL_STUDIO_JEWELRY_PROJECT_ID", "2")
-        
         for entry in logs[:200]:
             client_code = entry.get("client_code")
             filename = entry.get("filename")
@@ -982,6 +1011,7 @@ async def admin_get_pipeline(vaicore_admin: str = Cookie(None)):
             completion = 0
             if status in ("In Review", "Completed", "Review Finished"):
                 try:
+                    project_id = get_project_id_for_file(client_code, filename)
                     ls_status = await asyncio.to_thread(
                         check_annotation_status, client_code, project_id, filename
                     )
@@ -2014,12 +2044,12 @@ async def admin_deliver_batch(batch_id: str, vaicore_admin: str = Cookie(None)):
             raise HTTPException(status_code=404, detail="No files found in batch")
 
         client_code = batch_logs[0]["client_code"]
-        project_id = os.getenv("LABEL_STUDIO_JEWELRY_PROJECT_ID", "2")
 
         # 2. Trigger individual exports
         exported_files = []
         for log in batch_logs:
             filename = log["filename"]
+            project_id = get_project_id_for_file(client_code, filename)
             res = await asyncio.to_thread(export_and_deliver, client_code, filename, project_id)
             if res.get("status") == "success":
                 exported_files.append(res)

@@ -21,18 +21,37 @@ def parse_clickstream_logs(raw_data: bytes, filename: str) -> list:
         try:
             # 1. Parse Excel (.xlsx / .xls) Clickstream Logs (Binary Format)
             if filename_lower.endswith(".xlsx") or filename_lower.endswith(".xls"):
-                logger.info("Parsing Clickstream Excel (.xlsx) entries...")
+                logger.info("Parsing Clickstream Excel (.xlsx) entries across multiple sheets...")
                 import io
                 import pandas as pd
-                df = pd.read_excel(io.BytesIO(raw_data))
-                # Convert nan to empty strings for consistency
-                df = df.fillna("")
-                # Convert all columns to string or native JSON serializable types
+                excel_file = pd.ExcelFile(io.BytesIO(raw_data))
+                sheet_names = excel_file.sheet_names
+                logger.info(f"Excel sheets found: {sheet_names}")
+                
+                # Identify the sheet containing actual event timeline data
+                target_df = None
+                for sheet in sheet_names:
+                    df_sheet = pd.read_excel(excel_file, sheet_name=sheet)
+                    cols_lower = [str(c).lower().strip() for c in df_sheet.columns]
+                    if any(c in cols_lower for c in ["eventname", "action", "event_name", "event", "event_params", "element", "page"]):
+                        target_df = df_sheet
+                        logger.info(f"Selected sheet '{sheet}' as events table based on column match.")
+                        break
+                
+                # If no specific sheet matched, default to the second sheet if 2+ sheets exist, else first
+                if target_df is None:
+                    if len(sheet_names) >= 2:
+                        target_df = pd.read_excel(excel_file, sheet_name=sheet_names[1])
+                        logger.info(f"Defaulting to second sheet '{sheet_names[1]}'")
+                    else:
+                        target_df = pd.read_excel(excel_file, sheet_name=sheet_names[0])
+                        logger.info(f"Defaulting to first sheet '{sheet_names[0]}'")
+
+                target_df = target_df.fillna("")
                 records = []
-                for _, row in df.iterrows():
+                for _, row in target_df.iterrows():
                     rec = {}
                     for col, val in row.items():
-                        # Clean up pandas/numpy nan or null types
                         if pd.isna(val) or val == "nan":
                             rec[str(col)] = ""
                         else:
@@ -170,20 +189,29 @@ def analyze_timeline_friction(events: list) -> list:
                     except Exception:
                         pass
 
-            event_name = str(ev.get("EVENTNAME") or ev.get("eventname") or ev.get("action") or "UNKNOWN_EVENT")
-            page = str(event_params.get("EP_PAGE_NAME") or event_params.get("EP_SCREEN_NAME") or ev.get("page") or "")
-            if page in ("NA", "nan", ""):
-                page = ""
-            source = str(event_params.get("EP_SOURCE") or event_params.get("EP_CTA") or ev.get("element") or "")
-            if source in ("NA", "nan", ""):
-                source = ""
+            # Search keys flexibly to match all standard analytics schemas (Mixpanel, CleverTap, Amplitude, GA4, CSVs)
+            def get_field(*keys):
+                for k in keys:
+                    for ek, ev_val in ev.items():
+                        if str(ek).lower().strip() == k.lower():
+                            return str(ev_val) if ev_val not in (None, "nan", "NA", "") else ""
+                return ""
+
+            def get_param_field(*keys):
+                for k in keys:
+                    for pk, pv in event_params.items():
+                        if str(pk).lower().strip() == k.lower():
+                            return str(pv) if pv not in (None, "nan", "NA", "") else ""
+                return ""
+
+            event_name = get_field("EVENTNAME", "eventname", "event_name", "Event Name", "action", "Action", "Event", "event") or "UNKNOWN_EVENT"
+            page = get_param_field("EP_PAGE_NAME", "EP_SCREEN_NAME", "page", "Page Name", "screen", "url", "URL") or get_field("page", "Page", "Page Name", "screen", "Screen", "url", "URL")
+            source = get_param_field("EP_SOURCE", "EP_CTA", "element", "button", "target", "cta", "source") or get_field("element", "Element", "button", "Button", "target", "Target", "cta", "CTA", "source", "Source")
             if source.startswith("{value:") and source.endswith("}"):
                 source = source[7:-1]
-            section = str(event_params.get("EP_SECTION") or "")
-            if section in ("NA", "nan", ""):
-                section = ""
-            error_type = str(event_params.get("EP_ERROR_TYPE") or "")
-            cta = str(event_params.get("EP_CTA") or "")
+            section = get_param_field("EP_SECTION", "section", "Section") or get_field("section", "Section")
+            error_type = get_param_field("EP_ERROR_TYPE", "error_type", "error", "error_message") or get_field("error_type", "error_message", "error")
+            cta = get_param_field("EP_CTA", "cta", "CTA") or get_field("cta", "CTA")
 
             ev_upper = event_name.upper()
             event_friction = []
@@ -257,6 +285,68 @@ def analyze_timeline_friction(events: list) -> list:
         else:
             session_status = "Smooth Journey"
 
+        # Build concatenated event name string for intent/outcome inference
+        ev_names_str = " ".join(
+            str(ev.get("EVENTNAME") or ev.get("eventname") or ev.get("event_name")
+                or ev.get("Event Name") or ev.get("action") or "").upper()
+            for ev in raw_events
+        )
+
+        # Infer Journey Intent
+        if any(k in ev_names_str for k in ["PL_", "PERSONAL_LOAN", "LOAN_"]):
+            journey_intent = "Personal Loan / Credit"
+        elif any(k in ev_names_str for k in ["EMI_", "MY_RELATIONS", "REPAYMENT"]):
+            journey_intent = "EMI Payment / Loan Mgmt"
+        elif any(k in ev_names_str for k in ["HELP_SUPPORT", "SUPPORT_", "CONTACT_US"]):
+            journey_intent = "Help & Support Seeking"
+        elif any(k in ev_names_str for k in ["ACCOUNT_LOGIN", "DEVICE_PERMISSIONS", "ONBOARDING", "REGISTRATION"]):
+            journey_intent = "App Login / Onboarding"
+        elif any(k in ev_names_str for k in ["ACCOUNT_", "PROFILE_", "KYC_"]):
+            journey_intent = "Account / Profile"
+        elif any(k in ev_names_str for k in ["BANNER_PAGE", "HOMEPAGE", "PRODUCT_VIEW", "CATALOG"]):
+            journey_intent = "Product Discovery"
+        else:
+            journey_intent = "Unknown / Multi-intent"
+
+        # Infer Journey Outcome
+        if "Exit Intent / Abandoned" in friction_signals or "Login Failure" in friction_signals:
+            journey_outcome = "Abandoned Mid-Journey"
+        elif "Help Support Triggered" in friction_signals:
+            journey_outcome = "Deflected to Support"
+        elif "Connectivity Error" in friction_signals or "System / PWA Error" in friction_signals:
+            journey_outcome = "Blocked by Error"
+        elif not friction_signals and any(
+            k in ev_names_str for k in ["_SUBMITTED", "_SUCCESS", "_COMPLETE", "PAYMENT_DONE"]
+        ):
+            journey_outcome = "Successfully Completed"
+        else:
+            journey_outcome = "Browsing / Inconclusive"
+
+        # Infer Root Cause
+        if "Connectivity Error" in friction_signals or "Login Failure" in friction_signals:
+            root_cause = "Network / Connectivity Issue"
+        elif "System / PWA Error" in friction_signals and any(
+            k in ev_names_str for k in ["EXCEPTION", "PWA", "_ERROR", "_FAIL"]
+        ):
+            root_cause = "App / PWA Bug"
+        elif "Help Support Triggered" in friction_signals and not (
+            "System / PWA Error" in friction_signals or "Connectivity Error" in friction_signals
+        ):
+            root_cause = "UI Confusion"
+        elif "Exit Intent / Abandoned" in friction_signals and len(friction_signals) == 1:
+            root_cause = "Deliberate User Exit"
+        elif friction_signals:
+            root_cause = "Backend / API Error"
+        else:
+            root_cause = "No Issue — Smooth"
+
+        # Find first friction event index in timeline (+1 offset for summary row at index 0)
+        breakpoint_index = None
+        for idx, fev in enumerate(formatted_events):
+            if fev.get("friction"):
+                breakpoint_index = idx + 1
+                break
+
         result.append({
             "session_id": session_id,
             "event_count": len(raw_events),
@@ -266,6 +356,10 @@ def analyze_timeline_friction(events: list) -> list:
             "platform": platform,
             "friction_signals": friction_list,
             "session_status": session_status,
+            "journey_intent": journey_intent,
+            "journey_outcome": journey_outcome,
+            "root_cause": root_cause,
+            "breakpoint_index": breakpoint_index,
             "events": formatted_events,
         })
 

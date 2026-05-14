@@ -638,6 +638,44 @@ def push_clickstream_to_labelstudio(
                 "value": {"text": [ai_note]}
             })
 
+            # ML training schema: Journey Intent, Outcome, Root Cause, Drop-off Breakpoint
+            results.append({
+                "id": str(uuid.uuid4())[:8],
+                "from_name": "journey_intent",
+                "to_name": "filename",
+                "type": "choices",
+                "value": {"choices": [session.get("journey_intent", "Unknown / Multi-intent")]}
+            })
+            results.append({
+                "id": str(uuid.uuid4())[:8],
+                "from_name": "journey_outcome",
+                "to_name": "filename",
+                "type": "choices",
+                "value": {"choices": [session.get("journey_outcome", "Browsing / Inconclusive")]}
+            })
+            results.append({
+                "id": str(uuid.uuid4())[:8],
+                "from_name": "root_cause",
+                "to_name": "filename",
+                "type": "choices",
+                "value": {"choices": [session.get("root_cause", "No Issue — Smooth")]}
+            })
+            bp_idx = session.get("breakpoint_index")
+            if bp_idx is not None and bp_idx < len(timeline):
+                results.append({
+                    "id": str(uuid.uuid4())[:8],
+                    "from_name": "breakpoint",
+                    "to_name": "timeline",
+                    "type": "paragraphlabels",
+                    "value": {
+                        "start": str(bp_idx),
+                        "end": str(bp_idx),
+                        "startOffset": 0,
+                        "endOffset": 0,
+                        "paragraphlabels": ["Drop-off Point"]
+                    }
+                })
+
             task_payloads.append({
                 "data": {
                     "clickstream_timeline": timeline,

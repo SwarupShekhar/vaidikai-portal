@@ -157,7 +157,7 @@ def main():
   <Header value="Clickstream Session Analysis" />
   <Text name="filename" value="Log File: $filename" />
   <Paragraphs name="timeline" value="$clickstream_timeline" nameKey="action" textKey="element"/>
-  
+
   <Header value="1. Overall Session Journey" />
   <Choices name="session_status" toName="filename" choice="single" showInline="true">
     <Choice value="Smooth Journey" background="#4CAF50" />
@@ -165,7 +165,7 @@ def main():
     <Choice value="High Frustration" background="#FF5252" />
     <Choice value="Abandonment / Error" background="#9C27B0" />
   </Choices>
-  
+
   <Header value="2. Detected Behavioral Friction" />
   <Choices name="friction_types" toName="filename" choice="multiple" showInline="true">
     <Choice value="System / PWA Error" background="#FF5252" />
@@ -175,8 +175,44 @@ def main():
     <Choice value="Login Failure" background="#E91E63" />
     <Choice value="Page Reload Loop" background="#607D8B" />
   </Choices>
-  
-  <Header value="3. Root Cause Analysis / Notes" />
+
+  <Header value="3. Journey Intent (What was the user trying to do?)" />
+  <Choices name="journey_intent" toName="filename" choice="single" showInline="true">
+    <Choice value="Personal Loan / Credit" background="#1976D2" />
+    <Choice value="EMI Payment / Loan Mgmt" background="#0288D1" />
+    <Choice value="Product Discovery" background="#00897B" />
+    <Choice value="App Login / Onboarding" background="#43A047" />
+    <Choice value="Help &amp; Support Seeking" background="#FB8C00" />
+    <Choice value="Account / Profile" background="#8E24AA" />
+    <Choice value="Unknown / Multi-intent" background="#546E7A" />
+  </Choices>
+
+  <Header value="4. Journey Outcome (What happened in the end?)" />
+  <Choices name="journey_outcome" toName="filename" choice="single" showInline="true">
+    <Choice value="Successfully Completed" background="#4CAF50" />
+    <Choice value="Abandoned Mid-Journey" background="#F44336" />
+    <Choice value="Blocked by Error" background="#FF5252" />
+    <Choice value="Deflected to Support" background="#9C27B0" />
+    <Choice value="Browsing / Inconclusive" background="#78909C" />
+  </Choices>
+
+  <Header value="5. Root Cause (Why did friction occur?)" />
+  <Choices name="root_cause" toName="filename" choice="single" showInline="true">
+    <Choice value="Network / Connectivity Issue" background="#FF9800" />
+    <Choice value="App / PWA Bug" background="#F44336" />
+    <Choice value="UI Confusion" background="#FB8C00" />
+    <Choice value="Backend / API Error" background="#E91E63" />
+    <Choice value="Deliberate User Exit" background="#607D8B" />
+    <Choice value="No Issue — Smooth" background="#4CAF50" />
+  </Choices>
+
+  <Header value="6. Drop-off Breakpoint (Mark the key friction event on timeline)" />
+  <ParagraphLabels name="breakpoint" toName="timeline">
+    <Label value="Drop-off Point" background="#F44336" />
+    <Label value="Key Friction Event" background="#FF9800" />
+  </ParagraphLabels>
+
+  <Header value="7. Root Cause Analysis / Notes" />
   <TextArea name="summary" toName="filename" rows="3" placeholder="Describe session bottlenecks or UI friction observed..." />
 </View>"""
         },
