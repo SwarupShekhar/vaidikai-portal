@@ -58,10 +58,24 @@ jobs:
             fi
             echo "🐳 Using: $DC"
 
-            # ── Persistent data directory (outside the git repo — survives all git operations) ──
-            export LS_DATA_DIR="/opt/vaidikai-data/labelstudio"
-            mkdir -p "$LS_DATA_DIR" "$LS_DATA_DIR/sam_models"
-            echo "📂 Label Studio data dir: $LS_DATA_DIR"
+            # ── Persistent data directory (hardcoded — matches docker-compose.yml volume) ──
+            LS_DATA="/opt/vaidikai-data/labelstudio"
+            mkdir -p "$LS_DATA" "$LS_DATA/sam_models"
+
+            # ── One-time DB migration: if canonical DB is empty, copy from legacy path ──
+            LEGACY_DB="$DEPLOY_DIR/labelstudio-data/label_studio.sqlite3"
+            CANONICAL_DB="$LS_DATA/label_studio.sqlite3"
+            if [ -f "$LEGACY_DB" ]; then
+              # Check if canonical DB has the user table (proxy for "is initialized")
+              HAS_TABLE=$(python3 -c 'import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); q="SELECT count(*) FROM sqlite_master WHERE type="+chr(39)+"table"+chr(39)+" AND name="+chr(39)+"htx_user"+chr(39); r=c.execute(q).fetchone(); print("yes" if r and r[0]>0 else "no")' "$CANONICAL_DB" 2>/dev/null || echo "no")
+              if [ "$HAS_TABLE" = "no" ]; then
+                echo "📦 Migrating Label Studio DB from legacy path to canonical path..."
+                cp "$LEGACY_DB" "$CANONICAL_DB"
+                echo "✅ DB migrated: $LEGACY_DB → $CANONICAL_DB"
+              else
+                echo "✅ Canonical DB already initialized — no migration needed"
+              fi
+            fi
 
             echo "🛑 Stopping and rebuilding portal containers (preserving LS data)..."
             $DC stop vaidikai-portal sam-ml-backend || true

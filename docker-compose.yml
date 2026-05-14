@@ -18,7 +18,7 @@ services:
     ports:
       - "4006:8080"
     volumes:
-      - ${LS_DATA_DIR:-./labelstudio-data}:/label-studio/data
+      - /opt/vaidikai-data/labelstudio:/label-studio/data
     environment:
       - LABEL_STUDIO_LOCAL_FILES_SERVING_ENABLED=true
       - LABEL_STUDIO_HOST=https://annotate.vaidik.ai
@@ -43,7 +43,7 @@ services:
     ports:
       - "4007:9090"
     volumes:
-      - ${LS_DATA_DIR:-./labelstudio-data}/sam_models:/data
+      - /opt/vaidikai-data/labelstudio/sam_models:/data
     restart: always
     networks:
       - vaidikai-network
