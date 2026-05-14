@@ -116,6 +116,18 @@ def main():
   <Image name="image" value="$image"/>
   <PolygonLabels name="label" toName="image">
     <Label value="Jewelry" background="#FFD700"/>
+    <Label value="General Jewelry" background="#E0E0E0"/>
+    <Label value="Pendant" background="#FF9800"/>
+    <Label value="Earrings" background="#00BCD4"/>
+    <Label value="Ring" background="#E91E63"/>
+    <Label value="Necklace" background="#9C27B0"/>
+    <Label value="Chain" background="#3F51B5"/>
+    <Label value="Nose Ring" background="#F44336"/>
+    <Label value="Bangle" background="#4CAF50"/>
+    <Label value="Bracelet" background="#8BC34A"/>
+    <Label value="Mangalsutra" background="#795548"/>
+    <Label value="Maang Tikka" background="#607D8B"/>
+    <Label value="Anklet" background="#009688"/>
   </PolygonLabels>
   <KeyPointLabels name="keypoint" toName="image">
     <Label value="Positive" background="#00FF00"/>
@@ -171,7 +183,27 @@ def main():
             "default_id": "6",
             "config": """<View>
   <Image name="document" value="$document_url" />
-  <TextArea name="extracted_text" toName="document" rows="10" placeholder="Extracted business details..." />
+  <PolygonLabels name="label" toName="document">
+    <Label value="business_signage" background="#FF5722" />
+    <Label value="storefront" background="#4CAF50" />
+    <Label value="goods_display" background="#03A9F4" />
+    <Label value="merchant_activity" background="#9C27B0" />
+    <Label value="payment_qr" background="#009688" />
+    <Label value="license_certificate" background="#E91E63" />
+  </PolygonLabels>
+  <RectangleLabels name="bbox" toName="document">
+    <Label value="Bounding Box" background="#3F51B5" />
+  </RectangleLabels>
+  <TextArea name="extracted_text" toName="document" rows="4" placeholder="Extracted business details..." />
+  <Choices name="business_type" toName="document" choice="single" showInline="true">
+    <Choice value="Retail / Kirana" />
+    <Choice value="Hardware / Construction" />
+    <Choice value="Pharmacy / Clinic" />
+    <Choice value="Food / Restaurant" />
+    <Choice value="Apparel / Textiles" />
+    <Choice value="Services / Repair" />
+    <Choice value="Other" />
+  </Choices>
 </View>"""
         }
     ]
@@ -247,6 +279,14 @@ def main():
                 if found_id is not None:
                     print(f"   ✅ Found existing '{title}' project with ID: {found_id}")
                     project_ids_result[env_var] = str(found_id)
+                    # Automatically update existing project config to support new categories
+                    code_u, resp_u = make_request(f"{url}/api/projects/{found_id}", method="PATCH", data={
+                        "label_config": p_spec["config"]
+                    }, headers=headers_auth)
+                    if code_u in (200, 201):
+                        print(f"   ✅ Synchronized '{title}' labeling config successfully.")
+                    else:
+                        print(f"   ⚠️ Could not sync config for '{title}' (code {code_u}): {resp_u}")
                 else:
                     print(f"   ➕ Project '{title}' is missing. Creating it...")
                     code_c, resp_c = make_request(f"{url}/api/projects", method="POST", data={

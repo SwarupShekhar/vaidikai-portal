@@ -101,8 +101,8 @@ class SamMobileSegmentation(LabelStudioMLBase):
                     continue
                 # Get largest contour
                 contour = max(contours, key=cv2.contourArea)
-                # Simplify the contour points to keep UI responsive
-                epsilon = 0.003 * cv2.arcLength(contour, True)
+                # Simplify the contour points to keep UI responsive and smooth jagged artifacts
+                epsilon = 0.008 * cv2.arcLength(contour, True)
                 approx = cv2.approxPolyDP(contour, epsilon, True)
                 
                 points = []

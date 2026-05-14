@@ -71,7 +71,61 @@ def parse_transcript_content(content: bytes, filename: str) -> List[Dict[str, An
         except Exception as e:
             print(f"Error parsing JSON transcript: {e}")
 
-    # 2. Parse CSV / TSV
+    # 2. Parse Excel (.xlsx / .xls)
+    elif filename_lower.endswith(".xlsx") or filename_lower.endswith(".xls"):
+        try:
+            import openpyxl
+            wb = openpyxl.load_workbook(io.BytesIO(content), data_only=True)
+            sheet = wb.active
+            rows = list(sheet.iter_rows(values_only=True))
+            if rows:
+                headers = [str(h).strip().lower() if h is not None else "" for h in rows[0]]
+                speaker_idx = -1
+                text_idx = -1
+                start_idx = -1
+                end_idx = -1
+                for i, h in enumerate(headers):
+                    if h in ["speaker", "role", "name", "speaker_name", "from"]:
+                        speaker_idx = i
+                    elif h in ["text", "transcript", "message", "content", "dialogue"]:
+                        text_idx = i
+                    elif h in ["start", "start_time", "starttime"]:
+                        start_idx = i
+                    elif h in ["end", "end_time", "endtime"]:
+                        end_idx = i
+                
+                if speaker_idx == -1 and len(rows[0]) > 0:
+                    speaker_idx = 0
+                if text_idx == -1 and len(rows[0]) > 1:
+                    text_idx = 1
+                elif text_idx == -1 and len(rows[0]) == 1:
+                    text_idx = 0
+                
+                data_rows = rows[1:] if len(headers) > 0 and (speaker_idx != -1 or text_idx != -1) else rows
+                current_time = 0.0
+                for r in data_rows:
+                    if not r or all(cell is None or str(cell).strip() == "" for cell in r):
+                        continue
+                    speaker = str(r[speaker_idx]).strip() if speaker_idx < len(r) and r[speaker_idx] is not None else "Unknown"
+                    text = str(r[text_idx]).strip() if text_idx < len(r) and r[text_idx] is not None else ""
+                    if not text:
+                        continue
+                    
+                    start = float(r[start_idx]) if start_idx != -1 and start_idx < len(r) and r[start_idx] is not None else current_time
+                    duration = max(2.0, len(text.split()) * 0.4)
+                    end = float(r[end_idx]) if end_idx != -1 and end_idx < len(r) and r[end_idx] is not None else (start + duration)
+                    current_time = end + 0.5
+                    
+                    segments.append({
+                        "start_time": float(start),
+                        "end_time": float(end),
+                        "speaker": speaker,
+                        "transcript": text
+                    })
+        except Exception as e:
+            print(f"Error parsing Excel transcript: {e}")
+
+    # 3. Parse CSV / TSV
     elif filename_lower.endswith(".csv") or filename_lower.endswith(".tsv"):
         try:
             delimiter = "\t" if filename_lower.endswith(".tsv") else ","
@@ -120,7 +174,7 @@ def parse_transcript_content(content: bytes, filename: str) -> List[Dict[str, An
         except Exception as e:
             print(f"Error parsing CSV/TSV transcript: {e}")
 
-    # 3. Parse TXT / plain text
+    # 4. Parse TXT / plain text
     else:
         try:
             text_lines = content.decode("utf-8", errors="ignore").splitlines()

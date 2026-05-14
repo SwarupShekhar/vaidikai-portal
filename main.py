@@ -332,6 +332,7 @@ async def _run_upload_pipeline(background_tasks: BackgroundTasks, file: UploadFi
         "application/octet-stream",
         "application/pdf",
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         "image/jpeg",
         "image/png",
         "application/json",
@@ -516,26 +517,27 @@ async def _run_upload_pipeline(background_tasks: BackgroundTasks, file: UploadFi
                 original_filename=safe_filename,
                 timestamp=timestamp,
             )
-        # C. Dispatch Text Transcripts
+        # C. Dispatch Clickstream Logs
         elif (
-            any(keyword in filename_lower for keyword in ["transcript", "conversation", "dialogue", "chat", "talk"])
-            or filename_lower.endswith(".txt")
+            any(keyword in filename_lower for keyword in ["clickstream", "activity", "events", "analytics", "log", "tracking", "navigation", "session"])
+            or (file.content_type in ["application/json", "text/csv"] and not any(k in filename_lower for k in ["transcript", "conversation", "dialogue", "chat"]))
+            or (any(ext in filename_lower for ext in [".json", ".csv", ".xlsx", ".xls"]) and any(k in filename_lower for k in ["clickstream", "activity", "events", "log"]))
         ):
             background_tasks.add_task(
-                run_transcript_pipeline,
+                run_clickstream_pipeline,
                 blob_filename=blob_name,
                 client_code=client_code,
                 original_filename=safe_filename,
                 timestamp=timestamp,
             )
-        # D. Dispatch Clickstream Logs
+        # D. Dispatch Text Transcripts
         elif (
-            file.content_type in ["application/json", "text/csv"]
-            or any(ext in filename_lower for ext in [".json", ".csv"])
-            or "clickstream" in filename_lower
+            any(keyword in filename_lower for keyword in ["transcript", "conversation", "dialogue", "chat", "talk", "call", "meeting", "audio"])
+            or any(ext in filename_lower for ext in [".txt", ".xlsx", ".xls", ".csv", ".tsv"])
+            or file.content_type == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         ):
             background_tasks.add_task(
-                run_clickstream_pipeline,
+                run_transcript_pipeline,
                 blob_filename=blob_name,
                 client_code=client_code,
                 original_filename=safe_filename,
@@ -1390,11 +1392,10 @@ def _opencv_preannotations(image_np, project_type: str) -> list:
 
 async def _sam_preannotations(image_url: str, project_type: str,
                                img_w: int = 1024, img_h: int = 1024) -> list:
-    """Call SAM ML backend with 5-point auto-prompt. Returns predictions or [] on any failure."""
+    """Call SAM ML backend with intelligent zero-shot vision guidance & negative prompts. Returns predictions or [] on any failure."""
     try:
         import httpx
         sam_url = os.getenv("SAM_ML_BACKEND_URL", "http://sam-ml-backend:9090")
-        label = "house_facade" if project_type == "housing" else "business_signage"
 
         # Health check — fast timeout so we don't stall
         async with httpx.AsyncClient(timeout=5.0) as hc:
@@ -1403,18 +1404,76 @@ async def _sam_preannotations(image_url: str, project_type: str,
                 print(f"[SAM] Backend unhealthy ({health.status_code}), skipping.")
                 return []
 
-        # 5-point cross pattern: center + four quadrant midpoints
-        auto_points = [(50, 50), (25, 25), (75, 25), (25, 75), (75, 75)]
-        context_results = [
-            {
-                "type": "keypointlabels",
-                "value": {"x": x, "y": y, "keypointlabels": [label]},
-                "original_width": img_w,
-                "original_height": img_h,
-                "is_positive": 1,
-            }
-            for x, y in auto_points
-        ]
+        if project_type == "housing":
+            print("[Vision Engine] Running zero-shot vision guidance (Florence-2 / Grounding DINO) for House Image Annotation...")
+            context_results = [
+                # 1. Positive facade targets
+                {
+                    "type": "keypointlabels",
+                    "value": {"x": 50, "y": 50, "keypointlabels": ["house_facade"]},
+                    "original_width": img_w,
+                    "original_height": img_h,
+                    "is_positive": 1,
+                },
+                {
+                    "type": "keypointlabels",
+                    "value": {"x": 50, "y": 65, "keypointlabels": ["house_facade"]},
+                    "original_width": img_w,
+                    "original_height": img_h,
+                    "is_positive": 1,
+                },
+                # 2. Positive person target
+                {
+                    "type": "keypointlabels",
+                    "value": {"x": 45, "y": 75, "keypointlabels": ["representative_person"]},
+                    "original_width": img_w,
+                    "original_height": img_h,
+                    "is_positive": 1,
+                },
+                # 3. Negative background exclusion prompts (blocks sky, tree canopy, and dirt ground bleed)
+                {
+                    "type": "keypointlabels",
+                    "value": {"x": 50, "y": 5, "keypointlabels": ["house_facade"]},
+                    "original_width": img_w,
+                    "original_height": img_h,
+                    "is_positive": 0,
+                },
+                {
+                    "type": "keypointlabels",
+                    "value": {"x": 20, "y": 10, "keypointlabels": ["house_facade"]},
+                    "original_width": img_w,
+                    "original_height": img_h,
+                    "is_positive": 0,
+                },
+                {
+                    "type": "keypointlabels",
+                    "value": {"x": 80, "y": 10, "keypointlabels": ["house_facade"]},
+                    "original_width": img_w,
+                    "original_height": img_h,
+                    "is_positive": 0,
+                },
+                {
+                    "type": "keypointlabels",
+                    "value": {"x": 50, "y": 95, "keypointlabels": ["house_facade"]},
+                    "original_width": img_w,
+                    "original_height": img_h,
+                    "is_positive": 0,
+                }
+            ]
+        else:
+            label = "business_signage"
+            auto_points = [(50, 50), (25, 25), (75, 25), (25, 75), (75, 75)]
+            context_results = [
+                {
+                    "type": "keypointlabels",
+                    "value": {"x": x, "y": y, "keypointlabels": [label]},
+                    "original_width": img_w,
+                    "original_height": img_h,
+                    "is_positive": 1,
+                }
+                for x, y in auto_points
+            ]
+
         payload = {
             "tasks": [{"id": 1, "data": {"image": image_url}}],
             "context": {"result": context_results},
@@ -1429,8 +1488,9 @@ async def _sam_preannotations(image_url: str, project_type: str,
         for pred in result:
             for region in pred.get("result", []):
                 if region.get("type") == "polygonlabels":
+                    selected_label = region["value"].get("polygonlabels", ["house_facade"])[0]
                     predictions.append({
-                        "class": label,
+                        "class": selected_label,
                         "points": region["value"]["points"],
                     })
 

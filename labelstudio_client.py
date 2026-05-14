@@ -460,7 +460,7 @@ def push_jewelry_to_labelstudio(
                 "type": "polygonlabels",
                 "value": {
                     "points": points,
-                    "polygonlabels": [pred.get("class", "Jewelry" if project_type == "jewelry" else "house_facade")]
+                    "polygonlabels": [pred.get("class", "Jewelry" if project_type == "jewelry" else ("business_signage" if project_type == "business" else "house_facade"))]
                 }
             })
 
@@ -578,9 +578,17 @@ def push_clickstream_to_labelstudio(
         access_token = _resolve_token(api_key, ls_url)
         headers = _ls_headers(access_token)
 
+        # Format timeline paragraphs for rich Label Studio display
+        formatted_timeline = []
+        for ev in clickstream_timeline:
+            formatted_timeline.append({
+                "action": f"{ev.get('action', 'Click')} [{ev.get('timestamp', '')}]",
+                "element": f"Page: {ev.get('page', 'N/A')} | Target: {ev.get('element', 'N/A')} | Status: {ev.get('friction', 'Smooth')}"
+            })
+
         task_payload = {
             "data": {
-                "clickstream_timeline": clickstream_timeline,
+                "clickstream_timeline": formatted_timeline,
                 "filename": original_filename,
                 "client_code": client_code
             }
