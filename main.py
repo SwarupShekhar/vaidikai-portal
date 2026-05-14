@@ -1356,35 +1356,74 @@ def _fetch_image_numpy(url: str):
 
 
 def _opencv_preannotations(image_np, project_type: str) -> list:
-    """OpenCV contour detection → Label Studio polygon predictions. Never raises."""
+    """GrabCut foreground extraction → Label Studio polygon predictions. Never raises."""
     try:
         import cv2
+        import numpy as np
         h, w = image_np.shape[:2]
-        gray = cv2.cvtColor(image_np, cv2.COLOR_BGR2GRAY)
-        blurred = cv2.GaussianBlur(gray, (7, 7), 0)
-        edges = cv2.Canny(blurred, 30, 100)
-        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
-        closed = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
-        contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-        label = "house_facade" if project_type == "housing" else "business_signage"
-        min_area = w * h * 0.02  # ignore regions < 2% of image
-        predictions = []
-        for cnt in sorted(contours, key=cv2.contourArea, reverse=True)[:5]:
-            if cv2.contourArea(cnt) < min_area:
-                continue
-            epsilon = 0.01 * cv2.arcLength(cnt, True)
-            approx = cv2.approxPolyDP(cnt, epsilon, True)
+        if project_type == "housing":
+            # ROI: skip top 15% (sky/canopy) and bottom 25% (GPS watermark), 5% side margins
+            roi_top    = int(h * 0.15)
+            roi_bottom = int(h * 0.75)
+            roi_left   = int(w * 0.05)
+            roi_right  = int(w * 0.95)
+
+            mask      = np.zeros((h, w), np.uint8)
+            bgd_model = np.zeros((1, 65), np.float64)
+            fgd_model = np.zeros((1, 65), np.float64)
+            rect      = (roi_left, roi_top, roi_right - roi_left, roi_bottom - roi_top)
+            cv2.grabCut(image_np, mask, rect, bgd_model, fgd_model, 5, cv2.GC_INIT_WITH_RECT)
+
+            fg = np.where((mask == cv2.GC_FGD) | (mask == cv2.GC_PR_FGD), 255, 0).astype(np.uint8)
+
+            # Clean noise: close small gaps, remove speckles
+            k_close = cv2.getStructuringElement(cv2.MORPH_RECT, (25, 25))
+            k_open  = cv2.getStructuringElement(cv2.MORPH_RECT, (10, 10))
+            fg = cv2.morphologyEx(fg, cv2.MORPH_CLOSE, k_close)
+            fg = cv2.morphologyEx(fg, cv2.MORPH_OPEN,  k_open)
+
+            contours, _ = cv2.findContours(fg, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            if not contours:
+                return []
+
+            largest = max(contours, key=cv2.contourArea)
+            # Simplify to a manageable polygon (fewer points = cleaner annotation)
+            epsilon = 0.02 * cv2.arcLength(largest, True)
+            approx  = cv2.approxPolyDP(largest, epsilon, True)
             if len(approx) < 3:
-                continue
-            points = [
-                [round(float(pt[0][0]) / w * 100, 2), round(float(pt[0][1]) / h * 100, 2)]
-                for pt in approx
-            ]
-            predictions.append({"class": label, "points": points})
+                return []
 
-        print(f"[OpenCV] {len(predictions)} contour regions for {project_type}")
-        return predictions
+            points = [[round(float(p[0][0]) / w * 100, 2), round(float(p[0][1]) / h * 100, 2)] for p in approx]
+            print(f"[GrabCut] Housing: Main Structure polygon with {len(points)} points")
+            return [{"class": "Main Structure", "points": points}]
+
+        else:
+            # Business: Canny+contours still appropriate (signboard = high-contrast rectangle)
+            gray = cv2.cvtColor(image_np, cv2.COLOR_BGR2GRAY)
+            blurred = cv2.GaussianBlur(gray, (7, 7), 0)
+            edges = cv2.Canny(blurred, 30, 100)
+            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+            closed = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
+            contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            min_area = w * h * 0.02
+            predictions = []
+            for cnt in sorted(contours, key=cv2.contourArea, reverse=True)[:5]:
+                if cv2.contourArea(cnt) < min_area:
+                    continue
+                x, y, bw, bh = cv2.boundingRect(cnt)
+                center_y = y + bh / 2.0
+                if center_y > h * 0.75 or center_y < h * 0.15:
+                    continue
+                epsilon = 0.01 * cv2.arcLength(cnt, True)
+                approx = cv2.approxPolyDP(cnt, epsilon, True)
+                if len(approx) < 3:
+                    continue
+                points = [[round(float(pt[0][0]) / w * 100, 2), round(float(pt[0][1]) / h * 100, 2)] for pt in approx]
+                predictions.append({"class": "business_signage", "points": points})
+            print(f"[OpenCV] {len(predictions)} business contour regions")
+            return predictions
+
     except Exception as e:
         print(f"[OpenCV] Pre-annotation failed (non-blocking): {e}")
         return []
@@ -1410,14 +1449,14 @@ async def _sam_preannotations(image_url: str, project_type: str,
                 # 1. Positive facade targets
                 {
                     "type": "keypointlabels",
-                    "value": {"x": 50, "y": 50, "keypointlabels": ["house_facade"]},
+                    "value": {"x": 50, "y": 50, "keypointlabels": ["Main Structure"]},
                     "original_width": img_w,
                     "original_height": img_h,
                     "is_positive": 1,
                 },
                 {
                     "type": "keypointlabels",
-                    "value": {"x": 50, "y": 65, "keypointlabels": ["house_facade"]},
+                    "value": {"x": 50, "y": 65, "keypointlabels": ["Main Structure"]},
                     "original_width": img_w,
                     "original_height": img_h,
                     "is_positive": 1,
@@ -1425,7 +1464,7 @@ async def _sam_preannotations(image_url: str, project_type: str,
                 # 2. Positive person target
                 {
                     "type": "keypointlabels",
-                    "value": {"x": 45, "y": 75, "keypointlabels": ["representative_person"]},
+                    "value": {"x": 45, "y": 75, "keypointlabels": ["Person / Surveyor"]},
                     "original_width": img_w,
                     "original_height": img_h,
                     "is_positive": 1,
@@ -1433,28 +1472,28 @@ async def _sam_preannotations(image_url: str, project_type: str,
                 # 3. Negative background exclusion prompts (blocks sky, tree canopy, and dirt ground bleed)
                 {
                     "type": "keypointlabels",
-                    "value": {"x": 50, "y": 5, "keypointlabels": ["house_facade"]},
+                    "value": {"x": 50, "y": 5, "keypointlabels": ["Main Structure"]},
                     "original_width": img_w,
                     "original_height": img_h,
                     "is_positive": 0,
                 },
                 {
                     "type": "keypointlabels",
-                    "value": {"x": 20, "y": 10, "keypointlabels": ["house_facade"]},
+                    "value": {"x": 20, "y": 10, "keypointlabels": ["Main Structure"]},
                     "original_width": img_w,
                     "original_height": img_h,
                     "is_positive": 0,
                 },
                 {
                     "type": "keypointlabels",
-                    "value": {"x": 80, "y": 10, "keypointlabels": ["house_facade"]},
+                    "value": {"x": 80, "y": 10, "keypointlabels": ["Main Structure"]},
                     "original_width": img_w,
                     "original_height": img_h,
                     "is_positive": 0,
                 },
                 {
                     "type": "keypointlabels",
-                    "value": {"x": 50, "y": 95, "keypointlabels": ["house_facade"]},
+                    "value": {"x": 50, "y": 95, "keypointlabels": ["Main Structure"]},
                     "original_width": img_w,
                     "original_height": img_h,
                     "is_positive": 0,
@@ -1488,7 +1527,7 @@ async def _sam_preannotations(image_url: str, project_type: str,
         for pred in result:
             for region in pred.get("result", []):
                 if region.get("type") == "polygonlabels":
-                    selected_label = region["value"].get("polygonlabels", ["house_facade"])[0]
+                    selected_label = region["value"].get("polygonlabels", ["Main Structure"])[0]
                     predictions.append({
                         "class": selected_label,
                         "points": region["value"]["points"],

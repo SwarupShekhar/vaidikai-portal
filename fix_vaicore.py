@@ -170,10 +170,22 @@ def main():
             "config": """<View>
   <Image name="image" value="$image" />
   <PolygonLabels name="label" toName="image">
-    <Label value="house_facade" background="#FF4D4D" />
-    <Label value="representative_person" background="#4CAF50" />
-    <Label value="business_signboard" background="#2196F3" />
+    <Label value="Main Structure" background="#FF5722" />
+    <Label value="Roof / Terrace" background="#FF9800" />
+    <Label value="Entrance / Door" background="#4CAF50" />
+    <Label value="Window / Opening" background="#03A9F4" />
+    <Label value="Wall Inscription" background="#9C27B0" />
+    <Label value="Person / Surveyor" background="#009688" />
+    <Label value="GPS Watermark" background="#607D8B" />
   </PolygonLabels>
+  <RectangleLabels name="bbox" toName="image">
+    <Label value="Bounding Box" background="#3F51B5" />
+  </RectangleLabels>
+  <Choices name="construction_type" toName="image" choice="single" showInline="true">
+    <Choice value="Pucca (Brick/Concrete)" />
+    <Choice value="Semi-Pucca" />
+    <Choice value="Kutcha (Mud/Thatch)" />
+  </Choices>
 </View>"""
         },
         {

@@ -460,7 +460,7 @@ def push_jewelry_to_labelstudio(
                 "type": "polygonlabels",
                 "value": {
                     "points": points,
-                    "polygonlabels": [pred.get("class", "Jewelry" if project_type == "jewelry" else ("business_signage" if project_type == "business" else "house_facade"))]
+                    "polygonlabels": [pred.get("class", "Jewelry" if project_type == "jewelry" else ("business_signage" if project_type == "business" else "Main Structure"))]
                 }
             })
 
