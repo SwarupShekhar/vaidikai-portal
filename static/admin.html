@@ -400,12 +400,34 @@
         }
     }
 
+    // ── Refresh helpers ─────────────────────────────────
+    const ACTIVE_STATUSES = new Set([
+        'Processing', 'Processing ZIP', 'Reviewing', 'In Review',
+        'Uploading', 'Transcribing', 'Extracting'
+    ]);
+    window._pollInterval = null;
+    window._refreshTimer = null;
+
+    function scheduleRefresh() {
+        clearTimeout(window._refreshTimer);
+        window._refreshTimer = setTimeout(loadPipeline, 1200);
+    }
+
+    function _startPollIfNeeded(items) {
+        const hasActive = items.some(i => ACTIVE_STATUSES.has(i.status || ''));
+        if (hasActive && !window._pollInterval) {
+            window._pollInterval = setInterval(loadPipeline, 15000);
+        } else if (!hasActive && window._pollInterval) {
+            clearInterval(window._pollInterval);
+            window._pollInterval = null;
+        }
+    }
+
     function showAdmin() {
         document.getElementById('login-view').style.display = 'none';
         document.getElementById('admin-view').style.display = 'block';
         loadClients();
         loadPipeline();
-        setInterval(loadPipeline, 15000); // Auto-refresh pipeline
     }
 
     // ── Load Pipeline ──────────────────────────────
@@ -475,12 +497,10 @@
         // Preserve open states before re-rendering
         const openStates = window.accordionOpenStates || {};
         document.querySelectorAll('.client-acc-content').forEach(el => {
-            if (el.style.display === 'block' && el.id) openStates[el.id] = true;
-            else if (el.id) delete openStates[el.id];
+            if (el.id) openStates[el.id] = el.style.display === 'block';
         });
         document.querySelectorAll('.batch-acc-content').forEach(el => {
-            if (el.style.display === 'block' && el.id) openStates[el.id] = true;
-            else if (el.id) delete openStates[el.id];
+            if (el.id) openStates[el.id] = el.style.display === 'block';
         });
         window.accordionOpenStates = openStates;
 
@@ -517,11 +537,9 @@
             clientContent.className = 'client-acc-content';
             clientContent.id = `content-client-${clientCode}`;
             
-            let isClientOpen = window.accordionOpenStates && window.accordionOpenStates[clientContent.id];
-            if (window.accordionOpenStates && window.accordionOpenStates[clientContent.id] === undefined && clientIdx === 0) {
-                isClientOpen = true;
-                window.accordionOpenStates[clientContent.id] = true;
-            }
+            // Default open on first render; preserve explicit close on refresh
+            const _knownStates = window.accordionOpenStates || {};
+            const isClientOpen = clientContent.id in _knownStates ? _knownStates[clientContent.id] : true;
             clientContent.style.display = isClientOpen ? 'block' : 'none';
             // chevron is inside clientHeader (not yet in DOM) — use querySelector
             const clientChevron = clientHeader.querySelector('.chevron');
@@ -716,6 +734,7 @@
             clientSection.appendChild(clientContent);
             container.appendChild(clientSection);
         });
+        _startPollIfNeeded(items);
     }
 
     // ── Select All Completed Helper ────────────────────────────
@@ -796,7 +815,7 @@
                         }, 600);
                     }
                 }
-                loadPipeline();
+                scheduleRefresh();
             } else {
                 alert('Packaging failed: ' + (data.message || data.error || 'Unknown error'));
                 pkgBtn.disabled = false;
@@ -823,7 +842,7 @@
             
             if (res.ok && data.success) {
                 toast(`✅ Batch delivered successfully! Generating client download link...`);
-                loadPipeline();
+                scheduleRefresh();
                 
                 const clientEntry = _clients.find(c => c.client_code === clientCode);
                 if (clientEntry && data.blob_path) {
@@ -843,37 +862,59 @@
         }
     }
 
+    // ── Delete lock (one delete at a time) ──────────────
+    window._isDeleting = false;
+
+    function _acquireDeleteLock() {
+        if (window._isDeleting) {
+            toast('A delete is already in progress — please wait.');
+            return false;
+        }
+        window._isDeleting = true;
+        document.querySelectorAll('.btn-delete').forEach(b => b.disabled = true);
+        return true;
+    }
+
+    function _releaseDeleteLock() {
+        window._isDeleting = false;
+        document.querySelectorAll('.btn-delete').forEach(b => b.disabled = false);
+    }
+
     async function deleteBatch(batchId) {
         if (!confirm(`⚠️ PERMANENTLY DELETE batch ${batchId}?\n\nThis will remove it from local logs and recursively purge files from all Azure Blob containers. This cannot be undone.`)) return;
-        
+        if (!_acquireDeleteLock()) return;
         try {
             const res = await fetch(`/api/admin/batches/${batchId}`, { method: 'DELETE' });
             const data = await res.json();
             if (res.ok && data.success) {
                 toast(`🗑️ Batch ${batchId} deleted successfully.`);
-                loadPipeline();
+                scheduleRefresh();
             } else {
                 alert('Deletion failed: ' + (data.detail || 'Unknown error'));
             }
         } catch (e) {
             alert('Network error during deletion.');
+        } finally {
+            _releaseDeleteLock();
         }
     }
 
     async function deleteJob(clientCode, filename) {
         if (!confirm(`⚠️ PERMANENTLY DELETE job ${filename} for ${clientCode}?\n\nThis will remove it from the pipeline. This cannot be undone.`)) return;
-        
+        if (!_acquireDeleteLock()) return;
         try {
             const res = await fetch(`/api/admin/jobs/${clientCode}/${filename}`, { method: 'DELETE' });
             const data = await res.json();
             if (res.ok && data.success) {
                 toast(`🗑️ Job ${filename} deleted successfully.`);
-                loadPipeline();
+                scheduleRefresh();
             } else {
                 alert('Deletion failed: ' + (data.message || 'Unknown error'));
             }
         } catch (e) {
             alert('Network error during deletion.');
+        } finally {
+            _releaseDeleteLock();
         }
     }
 
@@ -891,7 +932,7 @@
             
             if (data.success) {
                 toast('✅ Delivery successful! Generating client download link…');
-                loadPipeline();
+                scheduleRefresh();
                 // Auto-generate a download link for the client
                 // Find the client token for this client_code
                 const clientEntry = _clients.find(c => c.client_code === clientCode);
@@ -983,7 +1024,7 @@
             const data = await res.json();
             if (data.success) {
                 toast('✅ Delivered with admin override.');
-                loadPipeline();
+                scheduleRefresh();
             } else {
                 alert('Force delivery failed: ' + data.message);
             }
@@ -1106,12 +1147,18 @@
     // ── Delete ────────────────────────────────────────────
     async function deleteClient(token, name) {
         if (!confirm(`Permanently delete "${name}"?\n\nThis cannot be undone.`)) return;
-        const res = await fetch(`/api/admin/clients/${token}`, { method: 'DELETE' });
-        if (res.ok) {
-            _clients = _clients.filter(x => x.token !== token);
-            renderTable(_clients);
-            renderStats(_clients);
-            toast(`"${name}" deleted.`);
+        if (!_acquireDeleteLock()) return;
+        try {
+            const res = await fetch(`/api/admin/clients/${token}`, { method: 'DELETE' });
+            if (res.ok) {
+                _clients = _clients.filter(x => x.token !== token);
+                renderTable(_clients);
+                renderStats(_clients);
+                toast(`"${name}" deleted.`);
+                scheduleRefresh();
+            }
+        } finally {
+            _releaseDeleteLock();
         }
     }
 

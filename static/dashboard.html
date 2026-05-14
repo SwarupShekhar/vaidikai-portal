@@ -472,26 +472,40 @@
             }
         }
 
+        // ── Refresh debounce + delete lock ───────────────
+        window._clientRefreshTimer = null;
+        window._isDeletingClient = false;
+
+        function scheduleClientRefresh() {
+            clearTimeout(window._clientRefreshTimer);
+            window._clientRefreshTimer = setTimeout(loadFiles, 1200);
+        }
+
         // Delete Delivery File
         async function deleteDeliveryFile(filename, btn) {
             if (!confirm(`Are you sure you want to permanently delete ${filename}?`)) return;
+            if (window._isDeletingClient) {
+                alert('A delete is already in progress — please wait.');
+                return;
+            }
+            window._isDeletingClient = true;
+            document.querySelectorAll('.btn-danger').forEach(b => b.disabled = true);
             const originalText = btn.textContent;
             btn.textContent = 'Deleting...';
-            btn.disabled = true;
             try {
                 const response = await fetch(`/api/delivery/${clientCode}/${filename}`, { method: 'DELETE' });
                 if (response.ok) {
-                    loadFiles();
+                    scheduleClientRefresh();
                 } else {
                     alert('Failed to delete file.');
-                    btn.textContent = originalText;
-                    btn.disabled = false;
                 }
             } catch (err) {
                 console.error(err);
                 alert('Error deleting file.');
+            } finally {
+                window._isDeletingClient = false;
+                document.querySelectorAll('.btn-danger').forEach(b => b.disabled = false);
                 btn.textContent = originalText;
-                btn.disabled = false;
             }
         }
 
@@ -511,7 +525,7 @@
                 const data = await response.json();
                 if (data.success) {
                     alert(data.message);
-                    loadFiles();
+                    scheduleClientRefresh();
                 } else {
                     alert('Export failed: ' + data.message);
                     btn.textContent = originalText;
