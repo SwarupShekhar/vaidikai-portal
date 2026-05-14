@@ -952,6 +952,28 @@ async def download_file(
     return {"download_url": download_url, "expires_in": "72 hours"}
 
 
+@app.delete("/api/delivery/{client_code}/{filename}")
+async def delete_delivery_file(
+    client_code: str,
+    filename: str,
+    vaicore_session: str = Cookie(None),
+    vaicore_admin: str = Cookie(None),
+):
+    await verify_client_or_admin(client_code, vaicore_session, vaicore_admin)
+    async with BlobServiceClient.from_connection_string(
+        AZURE_STORAGE_CONNECTION_STRING
+    ) as blob_service_client:
+        blob_name = f"{client_code}/{filename}"
+        blob_client = blob_service_client.get_blob_client(
+            container="client-delivery", blob=blob_name
+        )
+        if await blob_client.exists():
+            await blob_client.delete_blob()
+            return {"success": True, "message": "File deleted successfully"}
+        else:
+            raise HTTPException(status_code=404, detail="File not found")
+
+
 @app.get("/")
 async def root():
     return FileResponse("static/index.html")
