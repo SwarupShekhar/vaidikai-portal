@@ -303,13 +303,12 @@ def push_to_labelstudio(
                 }
             })
 
-            # 2. perRegion textarea — parentID links to region, start/end must match parent
+            # 2. perRegion textarea — start/end and id must match parent label region precisely
             result.append({
-                "id": region_id + "_t",
+                "id": region_id,
                 "from_name": "transcript",
                 "to_name": "audio",
                 "type": "textarea",
-                "parentID": region_id,
                 "value": {
                     "start": segment["start_time"],
                     "end": segment["end_time"],
@@ -776,11 +775,10 @@ def push_text_transcript_to_labelstudio(
 
             # 2. Textarea segment transcript
             result.append({
-                "id": region_id + "_t",
+                "id": region_id,
                 "from_name": "transcript",
                 "to_name": "audio",
                 "type": "textarea",
-                "parentID": region_id,
                 "value": {
                     "start": segment["start_time"],
                     "end": segment["end_time"],
