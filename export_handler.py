@@ -232,8 +232,8 @@ def export_and_deliver(
                         })
 
         is_jewelry = str(project_id) == os.getenv("LABEL_STUDIO_JEWELRY_PROJECT_ID", "2")
-        is_housing = str(project_id) == os.getenv("LABEL_STUDIO_HOUSING_PROJECT_ID", "3")
-        is_business = str(project_id) == os.getenv("LABEL_STUDIO_BUSINESS_PROJECT_ID", "4")
+        is_housing = str(project_id) == os.getenv("LABEL_STUDIO_HOUSING_PROJECT_ID", "5")
+        is_business = str(project_id) == os.getenv("LABEL_STUDIO_BUSINESS_PROJECT_ID", "6")
         is_image_project = is_jewelry or is_housing or is_business
         
         final_segments = []

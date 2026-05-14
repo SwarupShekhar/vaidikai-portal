@@ -774,14 +774,29 @@
 
             if (res.ok && data.success) {
                 toast(`✅ Delivery package created (${filenames.length} file${filenames.length > 1 ? 's' : ''})! Generating client download link…`);
-                loadPipeline();
+                
+                // Clear selection
+                window.selectedDeliverFiles = {};
+                document.querySelectorAll(`.deliver-check[data-client="${clientCode}"]`).forEach(cb => cb.checked = false);
 
                 const clientEntry = _clients.find(c => c.client_code === clientCode);
                 if (clientEntry && data.blob_path) {
-                    setTimeout(async () => {
-                        await generateDownloadLink(clientEntry.token, clientEntry.client_name, data.blob_path, `Delivery ${new Date().toLocaleDateString()}`);
-                    }, 600);
+                    const body = new URLSearchParams({ blob_path: data.blob_path, label: `Delivery ${new Date().toLocaleDateString()}` });
+                    const dlRes = await fetch(`/api/admin/clients/${clientEntry.token}/generate-download-link`, { method: 'POST', body });
+                    if (dlRes.ok) {
+                        const { download_url } = await dlRes.json();
+                        pkgBtn.disabled = false;
+                        pkgBtn.style.background = '#51cf66';
+                        pkgBtn.style.color = '#111';
+                        pkgBtn.innerHTML = `📥 Download Package ZIP`;
+                        pkgBtn.onclick = () => window.open(download_url, '_blank');
+                    } else {
+                        setTimeout(async () => {
+                            await generateDownloadLink(clientEntry.token, clientEntry.client_name, data.blob_path, `Delivery ${new Date().toLocaleDateString()}`);
+                        }, 600);
+                    }
                 }
+                loadPipeline();
             } else {
                 alert('Packaging failed: ' + (data.message || data.error || 'Unknown error'));
                 pkgBtn.disabled = false;
