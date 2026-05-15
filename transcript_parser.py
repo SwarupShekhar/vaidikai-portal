@@ -102,8 +102,75 @@ def parse_transcript_content(content: bytes, filename: str) -> List[Dict[str, An
                     text_idx = 0
                 
                 data_rows = rows[1:] if len(headers) > 0 and (speaker_idx != -1 or text_idx != -1) else rows
+                # 1. Check for Bulk Mode (Each row is a separate task)
+                # We assume bulk mode if there's more than one row and we can find a 'text' or 'transcript' column
+                has_bulk_text = any(h in ["transcript", "text", "message", "content", "dialogue", "conversation", "call_transcript"] for h in headers)
+                
+                if len(rows) > 1 and has_bulk_text:
+                    bulk_tasks = []
+                    for r_idx, r in enumerate(rows[1:]):
+                        if not r or all(cell is None or str(cell).strip() == "" for cell in r): 
+                            continue
+                        
+                        row_dict = {headers[i]: r[i] for i in range(min(len(headers), len(r)))}
+                        
+                        # Find the transcript column (fuzzy)
+                        raw_text = ""
+                        for tx_key in ["transcript", "text", "message", "content", "dialogue", "conversation", "call_transcript"]:
+                            if tx_key in row_dict and row_dict[tx_key]:
+                                raw_text = str(row_dict[tx_key]).strip()
+                                break
+                        
+                        if not raw_text:
+                            # Fallback to the longest cell in the row
+                            cells = [str(c) for c in r if c is not None]
+                            if cells:
+                                raw_text = max(cells, key=len)
+
+                        # Split text into dialogue segments
+                        call_segments = []
+                        parts = re.split(r'(?i)\s*(Agent|Customer|User|Client|System|Bot|Speaker\s*\d+|Borrower|Consultant):\s*', raw_text)
+                        
+                        if len(parts) > 1:
+                            for i in range(1, len(parts), 2):
+                                sp = parts[i]
+                                tx = parts[i+1] if (i+1) < len(parts) else ""
+                                if tx.strip():
+                                    call_segments.append({"speaker": sp.strip(), "transcript": tx.strip()})
+                        
+                        if not call_segments:
+                            match = re.match(r'^([^:]+):\s*(.*)$', raw_text)
+                            if match:
+                                sp, tx = match.groups()
+                                call_segments.append({"speaker": sp.strip(), "transcript": tx.strip()})
+                            else:
+                                call_segments.append({"speaker": "Unknown", "transcript": raw_text})
+                        
+                        # Extract metadata
+                        clean_metadata = {}
+                        for k, v in row_dict.items():
+                            k_clean = k.lower().replace(" ", "_").strip()
+                            if k_clean in ["call_id", "id", "callid", "reference", "ref"]:
+                                clean_metadata["call_id"] = v
+                            elif k_clean in ["agent", "agent_name", "user", "staff", "consultant"]:
+                                clean_metadata["agent_name"] = v
+                            elif k_clean in ["date", "call_date", "timestamp"]:
+                                clean_metadata["call_date"] = v
+                            else:
+                                clean_metadata[k_clean] = v
+
+                        bulk_tasks.append({
+                            "type": "bulk_call",
+                            "metadata": clean_metadata,
+                            "segments": call_segments
+                        })
+                    
+                    if bulk_tasks:
+                        return bulk_tasks
+
+                # 2. Legacy Mode: Single call where EACH ROW is a segment (Speaker, Text columns)
                 current_time = 0.0
-                for r in data_rows:
+                for r in rows[1:] if len(headers) > 0 else rows:
                     if not r or all(cell is None or str(cell).strip() == "" for cell in r):
                         continue
                     speaker = str(r[speaker_idx]).strip() if speaker_idx < len(r) and r[speaker_idx] is not None else "Unknown"
@@ -122,58 +189,6 @@ def parse_transcript_content(content: bytes, filename: str) -> List[Dict[str, An
                         "speaker": speaker,
                         "transcript": text
                     })
-
-                # Specialized Detection: Bulk Call Export (Each row is a separate call)
-                if "transcript" in headers and "call_id" in headers and len(rows) > 1:
-                    bulk_tasks = []
-                    import re
-                    for r_idx, r in enumerate(rows[1:]):
-                        if not r or all(cell is None for cell in r): continue
-                        row_dict = {headers[i]: r[i] for i in range(min(len(headers), len(r)))}
-                        raw_text = str(row_dict.get("transcript", "")).strip()
-                        if not raw_text: continue
-                        
-                        # Refined Smart Split: Splitting on known keywords to avoid internal colons (like 10:00 AM)
-                        call_segments = []
-                        # We split by common speaker markers and capture them
-                        parts = re.split(r'(?i)\s*(Agent|Customer|User|Client|System|Bot|Speaker\s*\d+):\s*', raw_text)
-                        
-                        if len(parts) > 1:
-                            # re.split with a group returns [pre-text, speaker1, text1, speaker2, text2, ...]
-                            # The first element is usually empty if it starts with a speaker
-                            for i in range(1, len(parts), 2):
-                                sp = parts[i]
-                                tx = parts[i+1] if (i+1) < len(parts) else ""
-                                if tx.strip():
-                                    call_segments.append({"speaker": sp.strip(), "transcript": tx.strip()})
-                        
-                        if not call_segments:
-                            # Fallback to simple split if keywords not found
-                            match = re.match(r'^([^:]+):\s*(.*)$', raw_text)
-                            if match:
-                                sp, tx = match.groups()
-                                call_segments.append({"speaker": sp.strip(), "transcript": tx.strip()})
-                            else:
-                                call_segments.append({"speaker": "Unknown", "transcript": raw_text})
-                        
-                        # Robust metadata extraction: find something for call_id and agent_name
-                        clean_metadata = {}
-                        for k, v in row_dict.items():
-                            k_clean = k.lower().replace(" ", "_")
-                            if k_clean in ["call_id", "id", "callid", "reference"]:
-                                clean_metadata["call_id"] = v
-                            elif k_clean in ["agent", "agent_name", "user", "staff"]:
-                                clean_metadata["agent_name"] = v
-                            else:
-                                clean_metadata[k_clean] = v
-
-                        bulk_tasks.append({
-                            "type": "bulk_call",
-                            "metadata": clean_metadata,
-                            "segments": call_segments
-                        })
-                    if bulk_tasks:
-                        return bulk_tasks
 
         except Exception as e:
             print(f"Error parsing Excel transcript: {e}")

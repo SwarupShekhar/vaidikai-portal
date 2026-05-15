@@ -35,7 +35,7 @@ def get_project_id_for_file(client_code: str, filename: str) -> str:
             if log.get("client_code") == client_code and log.get("filename") == filename:
                 cat = log.get("category")
                 if cat == "audio":
-                    return get_client_project_id(client_code, cat, "LABEL_STUDIO_AUDIO_PROJECT_ID", "8")
+                    return get_client_project_id(client_code, cat, "LABEL_STUDIO_AUDIO_PROJECT_ID", "1")
                 elif cat == "transcript":
                     return get_client_project_id(client_code, cat, "LABEL_STUDIO_TRANSCRIPT_PROJECT_ID", "7")
                 elif cat == "jewelry":
@@ -53,7 +53,7 @@ def get_project_id_for_file(client_code: str, filename: str) -> str:
 
     fn_lower = filename.lower()
     if any(fn_lower.endswith(ext) for ext in [".mp3", ".wav", ".m4a", ".ogg", ".flac"]):
-        return get_client_project_id(client_code, "audio", "LABEL_STUDIO_AUDIO_PROJECT_ID", "8")
+        return get_client_project_id(client_code, "audio", "LABEL_STUDIO_AUDIO_PROJECT_ID", "1")
     if any(kw in fn_lower for kw in ["clickstream", "session", "log"]):
         return get_client_project_id(client_code, "clickstream", "LABEL_STUDIO_CLICKSTREAM_PROJECT_ID", "4")
     if any(kw in fn_lower for kw in ["form", "invoice", "aadhaar", "pan", "kyc", "personal", ".pdf", ".docx"]):
