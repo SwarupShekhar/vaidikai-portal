@@ -57,8 +57,8 @@ def get_client_project_id(client_code: str, project_type: str, fallback_env_var:
     if env_val and env_val.strip():
         return env_val
         
-    if fallback_env_var == "LABEL_STUDIO_PROJECT_ID":
-        return "1"
+    if fallback_env_var == "LABEL_STUDIO_PROJECT_ID" or fallback_env_var == "LABEL_STUDIO_AUDIO_PROJECT_ID":
+        return "8"
     elif fallback_env_var == "LABEL_STUDIO_HOUSING_PROJECT_ID":
         return "5"
     elif fallback_env_var == "LABEL_STUDIO_BUSINESS_PROJECT_ID":
@@ -704,6 +704,7 @@ def push_text_transcript_to_labelstudio(
     original_filename: str,
     client_code: str,
     segments: list,
+    audio_url: str = None
 ) -> dict:
     """
     Push a text-only transcript (pre-parsed segments) to Label Studio.
@@ -760,7 +761,15 @@ def push_text_transcript_to_labelstudio(
                 
                 # Combine segments into full text for intelligence analysis
                 full_transcript = "\n".join([f"{s.get('speaker', 'Unknown')}: {s.get('transcript', '')}" for s in call_segments])
-                intel = get_call_intelligence(full_transcript)
+                
+                # AI Rate-Limit Safety
+                try:
+                    import time
+                    time.sleep(0.5) # Prevent TPM burst
+                    intel = get_call_intelligence(full_transcript)
+                except Exception as ai_e:
+                    print(f"AI Intelligence skipped for bulk row: {ai_e}")
+                    intel = {}
                 
                 dialogue_data = []
                 result = []
@@ -852,7 +861,13 @@ def push_text_transcript_to_labelstudio(
         
         # Collect full transcript for AI analysis
         full_transcript = "\n".join([f"{s.get('speaker', 'Unknown')}: {s.get('transcript', '')}" for s in segments])
-        intel = get_call_intelligence(full_transcript)
+        try:
+            intel = get_call_intelligence(full_transcript)
+        except Exception as ai_e:
+            print(f"AI Intelligence skipped for single task: {ai_e}")
+            intel = {}
+        
+        metadata = {} # Default to empty for single-task legacy mode
         
         for i, segment in enumerate(segments):
             speaker_raw = segment.get('speaker', 'Unknown')

@@ -201,23 +201,35 @@ def process_audio(blob_filename: str, client_code: str, language: str = 'hi') ->
             
             # STEP 1: Download with Fuzzy Matching
             blob_service_client = BlobServiceClient.from_connection_string(connection_string)
-            container_client = blob_service_client.get_container_client("client-intake")
             
-            # List blobs in client folder and find the best match
-            prefix = f"{client_code}/"
-            blobs = list(container_client.list_blobs(name_starts_with=prefix))
-            matching_blobs = [b.name for b in blobs if blob_filename.split("/")[-1] in b.name]
+            containers = ["client-intake", "processing"]
+            full_blob_path = None
+            found_container = None
             
-            if not matching_blobs:
-                raise ValueError(f"No matching blob found for {blob_filename} in {prefix}")
+            for container_name in containers:
+                try:
+                    container_client = blob_service_client.get_container_client(container_name)
+                    prefix = f"{client_code}/"
+                    # List blobs in client folder and find the best match
+                    blobs = list(container_client.list_blobs(name_starts_with=prefix))
+                    matching_blobs = [b.name for b in blobs if blob_filename.split("/")[-1] in b.name]
+                    
+                    if matching_blobs:
+                        full_blob_path = sorted(matching_blobs)[-1] # Take the latest matching version
+                        found_container = container_name
+                        break
+                except Exception as ce:
+                    print(f"Warning: Could not search container {container_name}: {ce}")
             
-            full_blob_path = sorted(matching_blobs)[-1] # Take the latest matching version
-            print(f"Matched blob: {full_blob_path}")
+            if not full_blob_path:
+                raise ValueError(f"No matching blob found for {blob_filename} in {client_code}/ (Searched {containers})")
+            
+            print(f"Matched blob: {full_blob_path} in container: {found_container}")
             
             pure_filename = full_blob_path.split("/")[-1]
             local_audio_path = base_temp_dir / pure_filename
             
-            blob_client = blob_service_client.get_blob_client(container="client-intake", blob=full_blob_path)
+            blob_client = blob_service_client.get_blob_client(container=found_container, blob=full_blob_path)
             with open(local_audio_path, "wb") as download_file:
                 download_file.write(blob_client.download_blob().readall())
             
