@@ -172,6 +172,11 @@ def export_and_deliver(
                 if annotation.get("was_cancelled"):
                     continue
                 
+                # STRICT ENFORCEMENT: Only export tasks that have been explicitly accepted by a reviewer
+                # This ensures the client only receives verified, high-quality data.
+                if not annotation.get("is_accepted"):
+                    continue
+                
                 result = annotation.get("result", [])
 
                 if is_audio:
