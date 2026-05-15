@@ -122,6 +122,38 @@ def parse_transcript_content(content: bytes, filename: str) -> List[Dict[str, An
                         "speaker": speaker,
                         "transcript": text
                     })
+
+                # Specialized Detection: Bulk Call Export (Each row is a separate call)
+                if "transcript" in headers and "call_id" in headers and len(rows) > 1:
+                    bulk_tasks = []
+                    import re
+                    for r_idx, r in enumerate(rows[1:]):
+                        if not r or all(cell is None for cell in r): continue
+                        row_dict = {headers[i]: r[i] for i in range(min(len(headers), len(r)))}
+                        raw_text = str(row_dict.get("transcript", "")).strip()
+                        if not raw_text: continue
+                        
+                        # Split dialogue turns
+                        call_segments = []
+                        lines = raw_text.split('\n')
+                        for line in lines:
+                            line = line.strip()
+                            if not line: continue
+                            match = re.match(r'^([^:]+):\s*(.*)$', line)
+                            if match:
+                                sp, tx = match.groups()
+                                call_segments.append({"speaker": sp.strip(), "transcript": tx.strip()})
+                            else:
+                                call_segments.append({"speaker": "Unknown", "transcript": line})
+                        
+                        bulk_tasks.append({
+                            "type": "bulk_call",
+                            "metadata": row_dict,
+                            "segments": call_segments
+                        })
+                    if bulk_tasks:
+                        return bulk_tasks
+
         except Exception as e:
             print(f"Error parsing Excel transcript: {e}")
 

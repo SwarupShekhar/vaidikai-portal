@@ -746,6 +746,66 @@ def push_text_transcript_to_labelstudio(
             if len(seen_speakers) == 2:
                 break
 
+        if not segments:
+            return {"status": "success", "task_id": None, "segments": 0}
+
+        # Check if we are in Bulk Mode (list of task dicts instead of segments)
+        if isinstance(segments[0], dict) and segments[0].get("type") == "bulk_call":
+            all_payloads = []
+            for task_data in segments:
+                metadata = task_data.get("metadata", {})
+                call_segments = task_data.get("segments", [])
+                
+                dialogue_data = []
+                result = []
+                for i, seg in enumerate(call_segments):
+                    sp_raw = seg.get("speaker", "Unknown")
+                    tx = seg.get("transcript", "")
+                    scrubbed = mask_text_data(tx)
+                    
+                    # Map to known labels: Agent, Customer, System
+                    label = "Agent"
+                    sp_low = sp_raw.lower()
+                    if any(x in sp_low for x in ["customer", "user", "client", "borrower"]):
+                        label = "Customer"
+                    elif any(x in sp_low for x in ["system", "bot", "auto"]):
+                        label = "System"
+                    
+                    dialogue_data.append({"author": sp_raw, "text": scrubbed})
+                    result.append({
+                        "id": f"p_{i}",
+                        "from_name": "labels",
+                        "to_name": "dialogue",
+                        "type": "paragraphlabels",
+                        "value": {
+                            "start": str(i),
+                            "end": str(i),
+                            "paragraphlabels": [label]
+                        }
+                    })
+                
+                payload = {
+                    "data": {
+                        "dialogue": dialogue_data,
+                        "call_id": str(metadata.get("call_id", "N/A")),
+                        "agent_name": str(metadata.get("agent_name", "N/A")),
+                        "call_date": str(metadata.get("call_date", "N/A")),
+                        "summary": str(metadata.get("summary", "N/A")),
+                        "sentiment": str(metadata.get("sentiment", "N/A")),
+                        "compliance_score": str(metadata.get("compliance_score", "N/A")),
+                        "filename": original_filename,
+                        "client_code": client_code
+                    },
+                    "annotations": [{"result": result}]
+                }
+                all_payloads.append(payload)
+            
+            # Import all tasks at once
+            r = _req.post(f"{ls_url}/api/projects/{project_id}/import", json=all_payloads, headers=headers, timeout=60)
+            r.raise_for_status()
+            return {"status": "success", "tasks_created": len(all_payloads)}
+
+        # Legacy Single Task Mode
         speaker_to_label = {}
         if len(seen_speakers) >= 1:
             speaker_to_label[seen_speakers[0]] = role_labels[0]
