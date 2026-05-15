@@ -165,7 +165,7 @@ def get_call_intelligence(transcript: str) -> Dict[str, Any]:
                         "4. Self-Service Failure: Borrowers leaving App/IVR for simple tasks (Statements, Interest Certs).\n"
                         "5. Customer Mood: Satisfied, Neutral, Frustrated, Angry.\n"
                         "6. Churn Risk: High Risk, Medium Risk, Low Risk.\n"
-                        "Return ONLY a JSON object with these keys: onboarding_friction (list), operational_pain (list), "
+                        "Return ONLY a JSON object with these keys: intent (string), onboarding_friction (list), operational_pain (list), "
                         "financial_disputes (list), service_leakage (list), mood (string), churn_risk (string), summary (string)."
                     )
                 },

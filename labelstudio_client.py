@@ -794,7 +794,12 @@ def push_text_transcript_to_labelstudio(
                         "value": {"start": str(i), "end": str(i), "paragraphlabels": [label]}
                     })
                 
-                # 2. Intelligence Tags (Pre-annotations)
+                # Intent
+                if intel.get("intent"):
+                    result.append({
+                        "from_name": "intent", "to_name": "dialogue", "type": "choices",
+                        "value": {"choices": [intel["intent"]]}
+                    })
                 # Mood
                 if intel.get("mood"):
                     result.append({
@@ -882,6 +887,11 @@ def push_text_transcript_to_labelstudio(
             })
 
         # Add Intelligence Pre-annotations
+        if intel.get("intent"):
+            result.append({
+                "from_name": "intent", "to_name": "dialogue", "type": "choices",
+                "value": {"choices": [intel["intent"]]}
+            })
         if intel.get("mood"):
             result.append({
                 "from_name": "customer_mood", "to_name": "dialogue", "type": "choices",
