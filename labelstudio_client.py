@@ -69,6 +69,8 @@ def get_client_project_id(client_code: str, project_type: str, fallback_env_var:
         return "3"
     elif fallback_env_var == "LABEL_STUDIO_CLICKSTREAM_PROJECT_ID":
         return "4"
+    elif fallback_env_var == "LABEL_STUDIO_TRANSCRIPT_PROJECT_ID":
+        return "7"
         
     return default_val
 
@@ -711,7 +713,7 @@ def push_text_transcript_to_labelstudio(
     try:
         ls_url = os.getenv("LABEL_STUDIO_URL", "").rstrip("/")
         api_key = os.getenv("LABEL_STUDIO_API_KEY")
-        project_id = get_client_project_id(client_code, "transcript", "LABEL_STUDIO_PROJECT_ID", "1")
+        project_id = get_client_project_id(client_code, "transcript", "LABEL_STUDIO_TRANSCRIPT_PROJECT_ID", "7")
 
         if not ls_url or not api_key or not project_id:
             raise ValueError("Label Studio credentials missing")
@@ -751,47 +753,34 @@ def push_text_transcript_to_labelstudio(
             speaker_to_label[seen_speakers[1]] = role_labels[1] if len(role_labels) > 1 else role_labels[0]
 
         result = []
-        for segment in segments:
+        dialogue_data = []
+        
+        for i, segment in enumerate(segments):
             speaker_raw = segment.get('speaker', 'Unknown')
             label = speaker_to_label.get(speaker_raw, role_labels[0])
-
-            # Scrub PII / GSTIN before uploading
             scrubbed_text = mask_text_data(segment.get("transcript", ""))
-
-            region_id = str(uuid.uuid4())[:8]
-
-            # 1. Timeline labels
+            
+            # 1. Build the Paragraphs data item
+            dialogue_data.append({
+                "author": label,
+                "text": scrubbed_text
+            })
+            
+            # 2. Build the pre-annotation for this paragraph
             result.append({
-                "id": region_id,
-                "from_name": "speaker",
-                "to_name": "audio",
-                "type": "labels",
+                "from_name": "labels",
+                "to_name": "dialogue",
+                "type": "paragraphlabels",
                 "value": {
-                    "start": segment["start_time"],
-                    "end": segment["end_time"],
-                    "labels": [label]
+                    "start": str(i),
+                    "end": str(i),
+                    "paragraphlabels": [label]
                 }
             })
-
-            # 2. Textarea segment transcript
-            result.append({
-                "id": region_id,
-                "from_name": "transcript",
-                "to_name": "audio",
-                "type": "textarea",
-                "value": {
-                    "start": segment["start_time"],
-                    "end": segment["end_time"],
-                    "text": [scrubbed_text]
-                }
-            })
-
-        # Static placeholder silent audio file
-        silent_audio_url = "https://vaidikaiprod.blob.core.windows.net/system-assets/silent.mp3"
 
         task_payload = {
             "data": {
-                "audio": silent_audio_url,
+                "dialogue": dialogue_data,
                 "filename": original_filename,
                 "client_code": client_code,
                 "text_only_transcript": True

@@ -161,6 +161,7 @@ def export_and_deliver(
         is_clickstream = str(project_id) == os.getenv("LABEL_STUDIO_CLICKSTREAM_PROJECT_ID", "4")
         is_housing = str(project_id) == os.getenv("LABEL_STUDIO_HOUSING_PROJECT_ID", "5")
         is_business = str(project_id) == os.getenv("LABEL_STUDIO_BUSINESS_PROJECT_ID", "6")
+        is_transcript = str(project_id) == os.getenv("LABEL_STUDIO_TRANSCRIPT_PROJECT_ID", "7")
         is_image_project = is_jewelry or is_housing or is_business
 
         for task in matched_tasks:
@@ -321,6 +322,29 @@ def export_and_deliver(
                             "Language": data["language"],
                             "Audio File": original_filename
                         })
+                elif is_transcript:
+                    dialogue = task_data.get("dialogue", [])
+                    label_map = {}
+                    for r_item in result:
+                        if r_item.get("type") == "paragraphlabels":
+                            val = r_item.get("value", {})
+                            try:
+                                start_idx = int(val.get("start", -1))
+                                labels = val.get("paragraphlabels", [])
+                                if start_idx != -1 and labels:
+                                    label_map[start_idx] = labels[0]
+                            except Exception:
+                                pass
+                    
+                    for i, p_item in enumerate(dialogue):
+                        speaker = label_map.get(i, p_item.get("author", "Unknown"))
+                        text = p_item.get("text", "")
+                        segments.append({
+                            "Speaker": speaker,
+                            "Transcript": text,
+                            "Language": task_lang,
+                            "Source File": original_filename
+                        })
 
         final_segments = []
         if is_image_project:
@@ -403,6 +427,22 @@ def export_and_deliver(
             summary_headers = ["Form Processing Overview", "Total Count"]
             summary_values_list = [
                 ["Total Forms Processed", len(segments)],
+                ["Export Date", datetime.now().strftime("%Y-%m-%d %H:%M:%S")]
+            ]
+        elif is_transcript:
+            for i, seg in enumerate(segments):
+                row = {
+                    "Turn #": i + 1,
+                    "Speaker": seg["Speaker"],
+                    "Transcript": seg["Transcript"],
+                    "Language": seg["Language"],
+                    "Source File": seg["Source File"]
+                }
+                final_segments.append(row)
+            columns = ["Turn #", "Speaker", "Transcript", "Language", "Source File"]
+            summary_headers = ["Transcript Overview", "Total Count"]
+            summary_values_list = [
+                ["Total Dialogue Turns", len(segments)],
                 ["Export Date", datetime.now().strftime("%Y-%m-%d %H:%M:%S")]
             ]
         elif is_audio:
