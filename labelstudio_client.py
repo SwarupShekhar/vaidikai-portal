@@ -371,36 +371,63 @@ def push_to_labelstudio(
         if language and language in LANGUAGE_ANNOTATOR_MAP:
             task_payload["assignees"] = LANGUAGE_ANNOTATOR_MAP[language]
 
-        # Label Studio 1.13+ often uses /api/projects/{id}/tasks for programmatic creation
-        import_url = f"{ls_url}/api/projects/{project_id}/tasks"
+        # ── STEP 5a: Create the task (data only, no predictions) ──
+        # Strip predictions from task_payload — we send them separately
+        predictions_data = task_payload.pop("predictions", [])
+        
+        import_url = f"{ls_url}/api/projects/{project_id}/import"
         print(f"Importing task to Label Studio via {import_url}...")
         
         r = _req.post(
             import_url,
-            json=task_payload,  # Send as single task object
+            json=[task_payload],
             headers=headers,
             timeout=60
         )
         
-        # Fallback to /import if /tasks gives 404
+        # Fallback to /tasks if /import gives 404
         if r.status_code == 404:
-            print("Endpoint /tasks returned 404. Falling back to /import...")
+            print("Endpoint /import returned 404. Falling back to /tasks...")
             r = _req.post(
-                f"{ls_url}/api/projects/{project_id}/import",
-                json=[task_payload],
+                f"{ls_url}/api/projects/{project_id}/tasks",
+                json=task_payload,
                 headers=headers,
                 timeout=60
             )
         r.raise_for_status()
         resp = r.json()
-        print(f"Import complete. Response: {resp}")
+        print(f"Task created. Response keys: {list(resp.keys()) if isinstance(resp, dict) else 'list'}")
 
         task_id = None
         try:
-            ids = resp.get('task_ids') or resp.get('ids', [])
-            task_id = ids[0] if ids else resp.get('id')
+            if isinstance(resp, dict):
+                ids = resp.get('task_ids') or resp.get('ids', [])
+                task_id = ids[0] if ids else resp.get('id')
+            elif isinstance(resp, list) and len(resp) > 0:
+                task_id = resp[0].get('id')
         except Exception:
             pass
+
+        # ── STEP 5b: Send pre-annotations as predictions ──
+        if task_id and predictions_data:
+            for pred in predictions_data:
+                pred_payload = {
+                    "task": task_id,
+                    "result": pred.get("result", []),
+                    "model_version": pred.get("model_version", "gpt-4o-whisper")
+                }
+                pr = _req.post(
+                    f"{ls_url}/api/predictions",
+                    json=pred_payload,
+                    headers=headers,
+                    timeout=30
+                )
+                if pr.status_code < 300:
+                    print(f"Predictions uploaded for task {task_id} ({len(pred.get('result',[]))} regions)")
+                else:
+                    print(f"Warning: Predictions upload returned {pr.status_code}: {pr.text[:200]}")
+        elif not task_id:
+            print("WARNING: Could not extract task_id — predictions not uploaded!")
 
         print(f"Label Studio upload successful. Task ID: {task_id}, Segments: {len(segments)}")
 
