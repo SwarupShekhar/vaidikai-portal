@@ -289,9 +289,23 @@ def process_audio(blob_filename: str, client_code: str, language: str = 'hi') ->
                         print("Using CUDA for Pyannote")
                     else:
                         pipeline.to(torch.device("cpu"))
-                        print("Using CPU for Pyannote")
-                        
-                    diarization = pipeline(str(local_audio_path))
+                    import subprocess
+                    temp_wav_path = str(local_audio_path) + ".wav"
+                    try:
+                        print("Converting audio to 16kHz WAV for Pyannote...")
+                        subprocess.run([
+                            'ffmpeg', '-y', '-i', str(local_audio_path),
+                            '-ar', '16000', '-ac', '1', temp_wav_path
+                        ], check=True, capture_output=True)
+                        print("Running Pyannote on converted WAV...")
+                        diarization = pipeline(temp_wav_path)
+                        # Cleanup
+                        import os
+                        if os.path.exists(temp_wav_path):
+                            os.remove(temp_wav_path)
+                    except Exception as e:
+                        print(f"FFmpeg conversion failed or Pyannote error: {e}. Falling back to original file.")
+                        diarization = pipeline(str(local_audio_path))
                     
                     for turn, _, speaker in diarization.itertracks(yield_label=True):
                         speaker_segments.append({
