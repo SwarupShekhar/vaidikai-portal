@@ -8,6 +8,7 @@ services:
     volumes:
       - /tmp/vaidikai:/tmp/vaidikai
       - ./upload_log.json:/app/upload_log.json
+      - /opt/vaidikai-data/whisper_models:/app/models
     restart: always
     depends_on:
       - labelstudio

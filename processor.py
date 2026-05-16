@@ -306,111 +306,90 @@ def process_audio(blob_filename: str, client_code: str, language: str = 'hi') ->
             else:
                 print("HF_TOKEN not found. Skipping Pyannote Diarization. Falling back to gap-based.")
             
-            # STEP 2: Transcribe with Multi-Stage Fallback
-            max_retries = 3
-            response = None
-            mode = "PRIMARY (whisper-1)"
-            
-            print(f"Mode: {mode}")
-            for attempt in range(max_retries):
-                try:
-                    with open(local_audio_path, "rb") as f:
-                        # ENGINE 1: OpenAI Whisper (Stable & Fast)
-                        # Added prompt for context-aware transcription (Hinglish/Financial terms)
-                        response = client.audio.transcriptions.create(
-                            file=f,
-                            model="whisper-1",
-                            response_format="verbose_json",
-                            timestamp_granularities=["segment"],
-                            language=language or 'hi',
-                            prompt=CLIENT_PROMPT_CONFIG.get(client_code, CLIENT_PROMPT_CONFIG['DEFAULT'])
-                        )
-                    break
-                except Exception as e:
-                    print(f"Transcription attempt {attempt+1} failed: {e}")
-                    if attempt < max_retries - 1:
-                        time.sleep(3 * (attempt + 1))
-                    else:
-                        print(f"Whisper-1 failed: {e}. Attempting LOCAL FALLBACK (Whisper Large-v3)...")
-                        mode = "LOCAL (Whisper Large-v3)"
-                        try:
-                            from faster_whisper import WhisperModel
-                            print("Loading 'large-v3' model for state-of-the-art accuracy...")
-                            local_model = WhisperModel("large-v3", device="cpu", compute_type="int8")
-                            segments, info = local_model.transcribe(
-                                str(local_audio_path), 
-                                beam_size=10, 
-                                language=language if language else None,
-                                initial_prompt=CLIENT_PROMPT_CONFIG.get(client_code, CLIENT_PROMPT_CONFIG['DEFAULT'])
-                            )
-                            
-                            local_segments = []
-                            for s in segments:
-                                local_segments.append({
-                                    'start': s.start,
-                                    'end': s.end,
-                                    'text': s.text,
-                                    'avg_logprob': s.avg_logprob
-                                })
-                            
-                            class MockResponse:
-                                def __init__(self, segments, lang):
-                                    self.segments = segments
-                                    self.language = lang
-                            
-                            response = MockResponse(local_segments, info.language)
-                        except Exception as local_e:
-                            raise Exception(f"Ultimate failure: Local fallback failed too. Error: {local_e}")
-            
-            print(f"Transcription logic finished using {mode}")
-            
-            detected_language = getattr(response, 'language', 'unknown')
-            raw_segments = getattr(response, 'segments', [])
-            temp_segments = []
-            
-            # STEP 3: Unified Segment Processing & Diarization Mapping
-            current_speaker = "Speaker A"
-            last_end_time = 0
-            for s in raw_segments:
-                is_dict = isinstance(s, dict)
-                text = s.get('text', '').strip() if is_dict else s.text.strip()
-                start = s.get('start', 0) if is_dict else s.start
-                end = s.get('end', 0) if is_dict else s.end
-                avg_logprob = s.get('avg_logprob', 0.0) if is_dict else getattr(s, 'avg_logprob', 0.0)
-                if avg_logprob is None:
-                    avg_logprob = 0.0
+            # STEP 2: Transcribe with Local Whisper Large-v3 for maximum accuracy
+            print("Loading 'large-v3' model for state-of-the-art accuracy...")
+            try:
+                from faster_whisper import WhisperModel
+                # Download to /app/models which is mapped to persistent storage on Vultr
+                local_model = WhisperModel("large-v3", device="cpu", compute_type="int8", download_root="/app/models")
                 
-                if use_pyannote and speaker_segments:
-                    # Find dominant speaker in this time range
-                    dominant_speaker = "Unknown"
-                    max_overlap = 0
-                    for p_seg in speaker_segments:
-                        overlap = min(end, p_seg["end"]) - max(start, p_seg["start"])
-                        if overlap > max_overlap:
-                            max_overlap = overlap
-                            dominant_speaker = p_seg["speaker"]
-                    
-                    if dominant_speaker != "Unknown":
-                        current_speaker = dominant_speaker
-                else:
-                    # Gap-based fallback: 0.5s silence = likely speaker change
-                    if start - last_end_time > 0.5:
-                        current_speaker = "Speaker B" if current_speaker == "Speaker A" else "Speaker A"
+                print("Starting transcription with word-level timestamps...")
+                segments, info = local_model.transcribe(
+                    str(local_audio_path), 
+                    beam_size=5, 
+                    language=language if language else None,
+                    initial_prompt=CLIENT_PROMPT_CONFIG.get(client_code, CLIENT_PROMPT_CONFIG['DEFAULT']),
+                    word_timestamps=True
+                )
                 
-                if filter_segment(text, avg_logprob):
-                    # Skip zero-timestamp segments past the first (Whisper hallucination loop)
-                    if start == 0 and end == 0 and temp_segments:
-                        print(f"Skipping zero-timestamp hallucination segment: {text[:50]}")
+                detected_language = info.language
+                print(f"Transcription complete. Detected language: {detected_language}")
+                
+                # STEP 3: Align words with Pyannote segments
+                temp_segments = []
+                current_speaker = "Unknown"
+                current_text = []
+                current_start = None
+                current_end = None
+                
+                for s in segments:
+                    if not s.words:
                         continue
-                    # Skip consecutive duplicate text (Whisper repetition loop)
-                    if temp_segments and temp_segments[-1]["text"].strip() == text.strip():
-                        print(f"Skipping duplicate segment: {text[:50]}")
-                        continue
-                    temp_segments.append({
-                        "start": start, "end": end, "text": text,
-                        "speaker": current_speaker, "avg_logprob": avg_logprob
-                    })
-                last_end_time = end
+                        
+                    for w in s.words:
+                        word_start = w.start
+                        word_end = w.end
+                        word_text = w.word
+                        
+                        # Find speaker for this word based on Pyannote overlap
+                        word_speaker = "Unknown"
+                        if use_pyannote and speaker_segments:
+                            max_overlap = 0
+                            for p_seg in speaker_segments:
+                                overlap = min(word_end, p_seg["end"]) - max(word_start, p_seg["start"])
+                                if overlap > max_overlap:
+                                    max_overlap = overlap
+                                    word_speaker = p_seg["speaker"]
+                        
+                        if word_speaker == "Unknown":
+                            word_speaker = current_speaker if current_speaker != "Unknown" else "Speaker A"
+                            
+                        # If speaker changes, save the accumulated segment
+                        if word_speaker != current_speaker:
+                            if current_text:
+                                text_str = "".join(current_text).strip()
+                                if filter_segment(text_str, s.avg_logprob):
+                                    temp_segments.append({
+                                        "start": current_start,
+                                        "end": current_end,
+                                        "text": text_str,
+                                        "speaker": current_speaker,
+                                        "avg_logprob": s.avg_logprob
+                                    })
+                            current_speaker = word_speaker
+                            current_start = word_start
+                            current_text = [word_text]
+                        else:
+                            if current_start is None:
+                                current_start = word_start
+                            current_text.append(word_text)
+                        current_end = word_end
+                        
+                # Save the final segment
+                if current_text:
+                    text_str = "".join(current_text).strip()
+                    if filter_segment(text_str, s.avg_logprob):
+                        temp_segments.append({
+                            "start": current_start,
+                            "end": current_end,
+                            "text": text_str,
+                            "speaker": current_speaker,
+                            "avg_logprob": s.avg_logprob
+                        })
+                        
+            except Exception as e:
+                print(f"Advanced transcription failed: {e}. Falling back to basic API.")
+                raise e # Let it fail for now so we know if it works or not during testing
 
             # AI Speaker Role Mapping
             role_mapping = identify_speaker_roles(temp_segments, client_code)
