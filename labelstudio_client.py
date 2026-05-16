@@ -359,7 +359,7 @@ def push_to_labelstudio(
                 "client_code": client_code,
                 "language": language or "en"
             },
-            "annotations": [
+            "predictions": [
                 {
                     "result": result,
                     "model_version": "gpt-4o-whisper"
