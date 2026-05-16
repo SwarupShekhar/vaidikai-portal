@@ -338,117 +338,76 @@ def process_audio(blob_filename: str, client_code: str, language: str = None) ->
                         file=f,
                         model="whisper-large-v3",
                         response_format="verbose_json",
-                        timestamp_granularities=["word"],
+                        timestamp_granularities=["segment"],
                         prompt=CLIENT_PROMPT_CONFIG.get(client_code, CLIENT_PROMPT_CONFIG['DEFAULT'])
                     )
                 
                 detected_language = getattr(response, 'language', None) or 'auto'
                 print(f"Transcription complete. Detected language: {detected_language}")
                 
-                # Adapt Groq response to the rest of the code
-                class DummySegment:
-                    def __init__(self, words, avg_logprob=0.0):
-                        self.words = words
-                        self.avg_logprob = avg_logprob
-                
-                class DummyWord:
-                    def __init__(self, word, start, end):
-                        self.word = word
-                        self.start = start
-                        self.end = end
-                
-                words = []
-                response_words = getattr(response, 'words', [])
-                response_text = getattr(response, 'text', '')
-                
-                # FALLBACK: If Groq returned very few words but has a longer text, 
-                # use the segments directly instead of the broken word list.
-                if len(response_words) < 5 and len(response_text) > 20:
-                    print("Groq returned very few words but has text. Falling back to segment-level.")
-                    for seg in getattr(response, 'segments', []):
-                        words.append(DummyWord(
-                            seg.get('text') if isinstance(seg, dict) else seg.text,
-                            seg.get('start') if isinstance(seg, dict) else seg.start,
-                            seg.get('end') if isinstance(seg, dict) else seg.end
-                        ))
-                elif response_words:
-                    for w in response_words:
-                        words.append(DummyWord(
-                            w.get('word') if isinstance(w, dict) else w.word, 
-                            w.get('start') if isinstance(w, dict) else w.start, 
-                            w.get('end') if isinstance(w, dict) else w.end
-                        ))
-                
-                segments = [DummySegment(words)]
-                
-                # STEP 3: Align words with Pyannote segments
-                temp_segments = []
-                current_speaker = "Unknown"
-                current_text = []
-                current_start = None
-                current_end = None
-                
-                for s in segments:
-                    if not s.words:
-                        continue
-                        
-                    for w in s.words:
-                        word_start = w.start
-                        word_end = w.end
-                        word_text = w.word
-                        
-                        # Find speaker for this word based on Pyannote overlap
-                        word_speaker = "Unknown"
-                        if use_pyannote and speaker_segments:
-                            max_overlap = 0
-                            for p_seg in speaker_segments:
-                                overlap = min(word_end, p_seg["end"]) - max(word_start, p_seg["start"])
-                                if overlap > max_overlap:
-                                    max_overlap = overlap
-                                    word_speaker = p_seg["speaker"]
+                # Build from Groq's SEGMENT-level output — complete and
+                # reliable. Groq's word-level array is frequently truncated,
+                # which silently drops large portions of the transcript. So we
+                # never build from words. Speaker is assigned per segment from
+                # pyannote turns (dominant time-overlap), gap-based otherwise.
+                raw_segments = getattr(response, 'segments', []) or []
+                response_text = getattr(response, 'text', '') or ''
 
-                        if word_speaker == "Unknown":
-                            # No pyannote — use gap-based switching at word boundaries
-                            prev_end = current_end if current_end is not None else 0
-                            if current_speaker == "Unknown":
-                                word_speaker = "Speaker A"
-                            elif word_start - prev_end > 0.5:
-                                word_speaker = "Speaker B" if current_speaker == "Speaker A" else "Speaker A"
-                            else:
-                                word_speaker = current_speaker
-                            
-                        # If speaker changes, save the accumulated segment
-                        if word_speaker != current_speaker:
-                            if current_text:
-                                text_str = "".join(current_text).strip()
-                                if filter_segment(text_str, s.avg_logprob):
-                                    temp_segments.append({
-                                        "start": current_start,
-                                        "end": current_end,
-                                        "text": text_str,
-                                        "speaker": current_speaker,
-                                        "avg_logprob": s.avg_logprob
-                                    })
-                            current_speaker = word_speaker
-                            current_start = word_start
-                            current_text = [word_text]
-                        else:
-                            if current_start is None:
-                                current_start = word_start
-                            current_text.append(word_text)
-                        current_end = word_end
-                        
-                # Save the final segment
-                if current_text:
-                    text_str = "".join(current_text).strip()
-                    if filter_segment(text_str, s.avg_logprob if 's' in dir() else 0.0):
+                norm_segments = []
+                for seg in raw_segments:
+                    is_d = isinstance(seg, dict)
+                    norm_segments.append({
+                        "text": ((seg.get('text') if is_d else getattr(seg, 'text', '')) or ''),
+                        "start": ((seg.get('start') if is_d else getattr(seg, 'start', 0)) or 0),
+                        "end": ((seg.get('end') if is_d else getattr(seg, 'end', 0)) or 0),
+                        "avg_logprob": ((seg.get('avg_logprob') if is_d else getattr(seg, 'avg_logprob', 0.0)) or 0.0),
+                    })
+
+                # Last resort: no segments but we have text -> single block so
+                # nothing is ever lost.
+                if not norm_segments and response_text.strip():
+                    norm_segments = [{"text": response_text.strip(), "start": 0, "end": 0, "avg_logprob": 0.0}]
+
+                print(f"Groq segments: {len(norm_segments)} | full text length: {len(response_text)} chars")
+
+                temp_segments = []
+                current_speaker = "Speaker A"
+                last_end_time = 0
+                for seg in norm_segments:
+                    text = (seg["text"] or "").strip()
+                    start = seg["start"]
+                    end = seg["end"]
+                    avg_logprob = seg["avg_logprob"]
+                    if avg_logprob is None:
+                        avg_logprob = 0.0
+
+                    if use_pyannote and speaker_segments:
+                        dominant_speaker = "Unknown"
+                        max_overlap = 0
+                        for p_seg in speaker_segments:
+                            overlap = min(end, p_seg["end"]) - max(start, p_seg["start"])
+                            if overlap > max_overlap:
+                                max_overlap = overlap
+                                dominant_speaker = p_seg["speaker"]
+                        if dominant_speaker != "Unknown":
+                            current_speaker = dominant_speaker
+                    else:
+                        # Gap-based fallback: 0.5s silence = speaker change
+                        if start - last_end_time > 0.5:
+                            current_speaker = "Speaker B" if current_speaker == "Speaker A" else "Speaker A"
+
+                    if filter_segment(text, avg_logprob):
+                        if start == 0 and end == 0 and temp_segments:
+                            last_end_time = end
+                            continue
+                        if temp_segments and temp_segments[-1]["text"].strip() == text.strip():
+                            last_end_time = end
+                            continue
                         temp_segments.append({
-                            "start": current_start,
-                            "end": current_end,
-                            "text": text_str,
-                            "speaker": current_speaker,
-                            "avg_logprob": s.avg_logprob if 's' in dir() else 0.0
+                            "start": start, "end": end, "text": text,
+                            "speaker": current_speaker, "avg_logprob": avg_logprob
                         })
+                    last_end_time = end
 
             except Exception as e:
                 print(f"Local Whisper failed: {e}. Falling back to OpenAI whisper-1 API...")
