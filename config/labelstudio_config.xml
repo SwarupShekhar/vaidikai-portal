@@ -1,11 +1,6 @@
 <View>
-  <Header value="Review Status (Admin/Reviewer Use Only)"/>
-  <Choices name="review_status" toName="audio" choice="single" showInline="true">
-    <Choice value="Accepted" hint="Mark as ready for client delivery"/>
-    <Choice value="Rejected" hint="Needs correction"/>
-  </Choices>
+  <Audio name="audio" value="$audio" zoom="true" hotkey="space"/>
 
-  <Audio name="audio" value="$audio"/>
   <Labels name="speaker" toName="audio">
     <Label value="Agent" background="#2196F3"/>
     <Label value="Customer" background="#4CAF50"/>
@@ -19,5 +14,27 @@
     <Label value="Speaker 2" background="#009688"/>
     <Label value="AI" background="#E91E63"/>
   </Labels>
-  <TextArea name="transcript" toName="audio" perRegion="true" placeholder="Transcript..." rows="2"/>
+  <TextArea name="transcript" toName="audio" perRegion="true" placeholder="Edit transcript..." rows="2" editable="true"/>
+
+  <Header value="Conversation"/>
+  <Paragraphs name="dialogue" value="$dialogue" layout="dialogue" nameKey="author" textKey="text"/>
+  <ParagraphLabels name="labels" toName="dialogue">
+    <Label value="Agent" background="#2196F3"/>
+    <Label value="Customer" background="#4CAF50"/>
+    <Label value="Teacher" background="#FF9800"/>
+    <Label value="Student" background="#9C27B0"/>
+    <Label value="Doctor" background="#F44336"/>
+    <Label value="Patient" background="#00BCD4"/>
+    <Label value="Interviewer" background="#795548"/>
+    <Label value="Interviewee" background="#607D8B"/>
+    <Label value="Speaker 1" background="#3F51B5"/>
+    <Label value="Speaker 2" background="#009688"/>
+    <Label value="AI" background="#E91E63"/>
+  </ParagraphLabels>
+
+  <Header value="Review Status (Admin/Reviewer Use Only)"/>
+  <Choices name="review_status" toName="audio" choice="single" showInline="true">
+    <Choice value="Accepted" hint="Mark as ready for client delivery"/>
+    <Choice value="Rejected" hint="Needs correction"/>
+  </Choices>
 </View>

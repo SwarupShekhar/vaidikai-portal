@@ -309,12 +309,20 @@ def process_audio(blob_filename: str, client_code: str, language: str = 'hi') ->
                     current_speaker = "Speaker B" if current_speaker == "Speaker A" else "Speaker A"
                 
                 if filter_segment(text, avg_logprob):
+                    # Skip zero-timestamp segments past the first (Whisper hallucination loop)
+                    if start == 0 and end == 0 and temp_segments:
+                        print(f"Skipping zero-timestamp hallucination segment: {text[:50]}")
+                        continue
+                    # Skip consecutive duplicate text (Whisper repetition loop)
+                    if temp_segments and temp_segments[-1]["text"].strip() == text.strip():
+                        print(f"Skipping duplicate segment: {text[:50]}")
+                        continue
                     temp_segments.append({
-                        "start": start, "end": end, "text": text, 
+                        "start": start, "end": end, "text": text,
                         "speaker": current_speaker, "avg_logprob": avg_logprob
                     })
                 last_end_time = end
-            
+
             # AI Speaker Role Mapping
             role_mapping = identify_speaker_roles(temp_segments, client_code)
             

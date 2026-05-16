@@ -257,7 +257,7 @@ def push_to_labelstudio(
 
         # Load client-specific role labels from clients.json
         clients_file = os.path.join(os.path.dirname(__file__), "clients.json")
-        role_labels = ["Speaker 1", "Speaker 2"]  # fallback default
+        role_labels = ["Agent", "Customer"]  # fallback default
         try:
             with open(clients_file, 'r', encoding='utf-8') as f:
                 clients = json.load(f)
@@ -290,8 +290,7 @@ def push_to_labelstudio(
             speaker_raw = segment.get('speaker', 'Unknown')
             label = speaker_to_label.get(speaker_raw, role_labels[0])
 
-            region_id = str(uuid.uuid4())[:8]
-
+            region_id = str(uuid.uuid4())
             # 1. Labels (speaker bar on timeline)
             result.append({
                 "id": region_id,
@@ -299,8 +298,8 @@ def push_to_labelstudio(
                 "to_name": "audio",
                 "type": "labels",
                 "value": {
-                    "start": segment["start_time"],
-                    "end": segment["end_time"],
+                    "start": float(segment["start_time"]),
+                    "end": float(segment["end_time"]),
                     "labels": [label]
                 }
             })
@@ -312,10 +311,37 @@ def push_to_labelstudio(
                 "to_name": "audio",
                 "type": "textarea",
                 "value": {
-                    "start": segment["start_time"],
-                    "end": segment["end_time"],
+                    "start": float(segment["start_time"]),
+                    "end": float(segment["end_time"]),
                     "text": [segment.get("transcript", "")]
                 }
+            })
+
+        # 3. dialogue ParagraphLabels — allows editing the Agent/Customer tags on bubbles
+        for i, segment in enumerate(segments):
+            speaker_raw = segment.get('speaker', 'Unknown')
+            label = speaker_to_label.get(speaker_raw, role_labels[0])
+            
+            result.append({
+                "id": f"p_{i}",
+                "from_name": "labels",
+                "to_name": "dialogue",
+                "type": "paragraphlabels",
+                "value": {
+                    "start": str(i),
+                    "end": str(i),
+                    "paragraphlabels": [label]
+                }
+            })
+
+        # Build dialogue for Paragraphs tag
+        dialogue = []
+        for i, segment in enumerate(segments):
+            speaker_raw = segment.get('speaker', 'Unknown')
+            label = speaker_to_label.get(speaker_raw, role_labels[0])
+            dialogue.append({
+                "author": label,
+                "text": segment.get("transcript", "")
             })
 
         # STEP 5: Import task with annotations embedded.
@@ -324,11 +350,12 @@ def push_to_labelstudio(
         task_payload = {
             "data": {
                 "audio": sas_url,
+                "dialogue": dialogue,
                 "filename": original_filename,
                 "client_code": client_code,
                 "language": language or "en"
             },
-            "predictions": [
+            "annotations": [
                 {
                     "result": result,
                     "model_version": "gpt-4o-whisper"
