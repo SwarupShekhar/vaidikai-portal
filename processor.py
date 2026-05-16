@@ -326,7 +326,6 @@ def process_audio(blob_filename: str, client_code: str, language: str = 'hi') ->
                         model="whisper-large-v3",
                         response_format="verbose_json",
                         timestamp_granularities=["word"],
-                        language=language or 'hi',
                         prompt=CLIENT_PROMPT_CONFIG.get(client_code, CLIENT_PROMPT_CONFIG['DEFAULT'])
                     )
                 
@@ -346,12 +345,26 @@ def process_audio(blob_filename: str, client_code: str, language: str = 'hi') ->
                         self.end = end
                 
                 words = []
-                for w in getattr(response, 'words', []):
-                    words.append(DummyWord(
-                        w.get('word') if isinstance(w, dict) else w.word, 
-                        w.get('start') if isinstance(w, dict) else w.start, 
-                        w.get('end') if isinstance(w, dict) else w.end
-                    ))
+                response_words = getattr(response, 'words', [])
+                response_text = getattr(response, 'text', '')
+                
+                # FALLBACK: If Groq returned very few words but has a longer text, 
+                # use the segments directly instead of the broken word list.
+                if len(response_words) < 5 and len(response_text) > 20:
+                    print("Groq returned very few words but has text. Falling back to segment-level.")
+                    for seg in getattr(response, 'segments', []):
+                        words.append(DummyWord(
+                            seg.get('text') if isinstance(seg, dict) else seg.text,
+                            seg.get('start') if isinstance(seg, dict) else seg.start,
+                            seg.get('end') if isinstance(seg, dict) else seg.end
+                        ))
+                elif response_words:
+                    for w in response_words:
+                        words.append(DummyWord(
+                            w.get('word') if isinstance(w, dict) else w.word, 
+                            w.get('start') if isinstance(w, dict) else w.start, 
+                            w.get('end') if isinstance(w, dict) else w.end
+                        ))
                 
                 segments = [DummySegment(words)]
                 
