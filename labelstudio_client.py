@@ -542,17 +542,12 @@ def push_jewelry_to_labelstudio(
             }
         }
 
-        if results:
-            task_payload["predictions"] = [
-                {
-                    "result": results,
-                    "model_version": "gpt-4o-vision"
-                }
-            ]
-
+        # Keep predictions OUT of the task payload. This LS version 404s on
+        # /import and the /tasks fallback silently drops embedded predictions
+        # (that is why preannotations vanished). Upload the task first, then
+        # POST predictions separately to /api/predictions — the same proven
+        # pattern the audio path uses.
         r = _req.post(f"{ls_url}/api/projects/{project_id}/import", json=[task_payload], headers=headers, timeout=60)
-        # This LS version 404s on /import — fall back to /tasks (same as the
-        # audio/clickstream paths). Image-path only.
         if r.status_code == 404:
             print("Image /import returned 404. Falling back to /tasks...")
             r = _req.post(f"{ls_url}/api/projects/{project_id}/tasks", json=task_payload, headers=headers, timeout=60)
@@ -560,6 +555,22 @@ def push_jewelry_to_labelstudio(
         resp = r.json()
         ids = resp.get('task_ids') or resp.get('ids', [])
         task_id = ids[0] if ids else resp.get('id')
+        if task_id is None and isinstance(resp, list) and resp:
+            task_id = resp[0].get('id')
+
+        # Upload preannotations separately so they survive the /tasks fallback.
+        if task_id and results:
+            pr = _req.post(
+                f"{ls_url}/api/predictions",
+                json={"task": task_id, "result": results, "model_version": "gpt-4o-vision"},
+                headers=headers, timeout=30
+            )
+            if pr.status_code < 300:
+                print(f"Image predictions uploaded for task {task_id} ({len(results)} regions)")
+            else:
+                print(f"Warning: image predictions upload {pr.status_code}: {pr.text[:200]}")
+        elif not task_id:
+            print("WARNING: no task_id extracted — image predictions not uploaded!")
 
         return {"status": "success", "task_id": task_id, "predictions_count": len(predictions)}
 
@@ -604,23 +615,18 @@ def push_form_to_labelstudio(
             }
         ]
 
+        # Predictions kept OUT of the task payload — the /tasks fallback drops
+        # embedded predictions. Upload task, then predictions separately.
         task_payload = {
             "data": {
                 "document_url": document_sas,
                 "filename": original_filename,
                 "client_code": client_code,
                 "anonymized_ocr_text": anonymized_ocr_text
-            },
-            "predictions": [
-                {
-                    "result": results,
-                    "model_version": "gpt-4o-ocr"
-                }
-            ]
+            }
         }
 
         r = _req.post(f"{ls_url}/api/projects/{project_id}/import", json=[task_payload], headers=headers, timeout=60)
-        # This LS version 404s on /import — fall back to /tasks. Form-path only.
         if r.status_code == 404:
             print("Form /import returned 404. Falling back to /tasks...")
             r = _req.post(f"{ls_url}/api/projects/{project_id}/tasks", json=task_payload, headers=headers, timeout=60)
@@ -628,6 +634,21 @@ def push_form_to_labelstudio(
         resp = r.json()
         ids = resp.get('task_ids') or resp.get('ids', [])
         task_id = ids[0] if ids else resp.get('id')
+        if task_id is None and isinstance(resp, list) and resp:
+            task_id = resp[0].get('id')
+
+        if task_id and results:
+            pr = _req.post(
+                f"{ls_url}/api/predictions",
+                json={"task": task_id, "result": results, "model_version": "gpt-4o-ocr"},
+                headers=headers, timeout=30
+            )
+            if pr.status_code < 300:
+                print(f"Form predictions uploaded for task {task_id} ({len(results)} regions)")
+            else:
+                print(f"Warning: form predictions upload {pr.status_code}: {pr.text[:200]}")
+        elif not task_id:
+            print("WARNING: no task_id extracted — form predictions not uploaded!")
 
         return {"status": "success", "task_id": task_id}
 
@@ -775,24 +796,43 @@ def push_clickstream_to_labelstudio(
             imported = 0
             first_id = None
             failed = 0
+            pred_ok = 0
             for payload in task_payloads:
                 try:
+                    # /tasks ignores embedded predictions — strip and upload
+                    # them separately so the AI pre-analysis survives.
+                    preds = payload.pop("predictions", [])
                     tr = _req.post(
                         f"{ls_url}/api/projects/{project_id}/tasks",
                         json=payload, headers=headers, timeout=60
                     )
                     tr.raise_for_status()
                     imported += 1
+                    tid = None
+                    try:
+                        tid = tr.json().get("id")
+                    except Exception:
+                        pass
                     if first_id is None:
+                        first_id = tid
+                    if tid and preds:
                         try:
-                            first_id = tr.json().get("id")
+                            ppr = _req.post(
+                                f"{ls_url}/api/predictions",
+                                json={"task": tid,
+                                      "result": preds[0].get("result", []),
+                                      "model_version": "gpt-4o-clickstream"},
+                                headers=headers, timeout=30
+                            )
+                            if ppr.status_code < 300:
+                                pred_ok += 1
                         except Exception:
                             pass
                 except Exception as se:
                     failed += 1
                     if failed <= 3:
                         print(f"  Session import failed: {se}")
-            print(f"Clickstream /tasks fallback: {imported} imported, {failed} failed.")
+            print(f"Clickstream /tasks fallback: {imported} imported, {failed} failed, {pred_ok} with predictions.")
             if imported == 0:
                 raise Exception(f"All {len(task_payloads)} clickstream sessions failed to import")
             return {"status": "success", "task_id": first_id,
