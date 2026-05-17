@@ -399,6 +399,7 @@ def export_and_deliver(
                         })
 
         final_segments = []
+        call_insights = None  # populated only for is_audio (GPT-4o Call Insights sheet)
         if is_image_project:
             for i, seg in enumerate(segments):
                 seg["Item #"] = i + 1
@@ -504,20 +505,66 @@ def export_and_deliver(
 
             lang_str = sorted(list(languages))[0] if languages else "Annotated"
             transcript_col = f"Transcript ({lang_str})"
-            
+
+            # Per-segment Intent/Sentiment/Outcome from the HUMAN-CORRECTED
+            # text (rule-based engine reused from processor — cheap,
+            # deterministic). Recomputed here, not from raw ASR pre-tags.
+            try:
+                from processor import (
+                    tag as _tag, INTENT_RULES as _IR,
+                    SENTIMENT_RULES as _SR, OUTCOME_RULES as _OR,
+                )
+            except Exception as _ie:
+                print(f"[export] tag engine import failed: {_ie}")
+                _tag = None
+
             for s in segments:
-                final_segments.append({
+                txt = s["Transcript"]
+                row = {
                     "Segment #": s["Segment #"],
                     "Speaker": s["Speaker"],
                     "Start Time (s)": s["Start Time (s)"],
                     "End Time (s)": s["End Time (s)"],
                     "Duration (s)": s["Duration (s)"],
-                    transcript_col: s["Transcript"],
+                    transcript_col: txt,
+                    "Intent": _tag(txt, _IR) if _tag else "",
+                    "Sentiment": _tag(txt, _SR) if _tag else "",
+                    "Outcome": _tag(txt, _OR) if _tag else "",
                     "Language": s["Language"],
                     "Audio File": s["Audio File"]
-                })
+                }
+                final_segments.append(row)
 
-            columns = ["Segment #", "Speaker", "Start Time (s)", "End Time (s)", "Duration (s)", transcript_col, "Language", "Audio File"]
+            columns = ["Segment #", "Speaker", "Start Time (s)", "End Time (s)", "Duration (s)", transcript_col, "Intent", "Sentiment", "Outcome", "Language", "Audio File"]
+
+            # GPT-4o Call Insights on the corrected full transcript.
+            try:
+                from processor import get_call_intelligence as _gci
+                _full = "\n".join(
+                    f"{s['Speaker']}: {s['Transcript']}" for s in segments
+                )
+                _ci = _gci(_full) if _full.strip() else {}
+            except Exception as _ce:
+                print(f"[export] Call insights generation failed: {_ce}")
+                _ci = {}
+
+            def _join(v):
+                if isinstance(v, (list, tuple)):
+                    return ", ".join(str(x) for x in v) if v else "None"
+                return str(v) if v not in (None, "") else "—"
+
+            call_insights = [
+                ("Audio File", original_filename),
+                ("Language", ", ".join(sorted(list(languages))) or lang_str),
+                ("Call Intent", _join(_ci.get("intent"))),
+                ("Customer Mood", _join(_ci.get("mood"))),
+                ("Churn Risk", _join(_ci.get("churn_risk"))),
+                ("Onboarding Friction", _join(_ci.get("onboarding_friction"))),
+                ("Operational Pain", _join(_ci.get("operational_pain"))),
+                ("Financial Disputes", _join(_ci.get("financial_disputes"))),
+                ("Service Leakage", _join(_ci.get("service_leakage"))),
+                ("Summary", _join(_ci.get("summary"))),
+            ]
             
             total_duration_secs = sum(s["Duration (s)"] for s in segments)
             unique_speakers = sorted(list(set(s["Speaker"] for s in segments)))
@@ -591,10 +638,36 @@ def export_and_deliver(
 
         widths = {
             "Item #": 10, "Category": 20, "Geometry Type": 15, "Points Count": 12, "Annotator": 20, "Image File": 30,
-            "Segment #": 10, "Speaker": 15, "Start Time (s)": 15, "End Time (s)": 15, "Duration (s)": 15, "Transcript": 60, "Language": 12, "Audio File": 30
+            "Segment #": 10, "Speaker": 15, "Start Time (s)": 15, "End Time (s)": 15, "Duration (s)": 15, "Transcript": 60,
+            "Intent": 20, "Sentiment": 14, "Outcome": 24, "Language": 12, "Audio File": 30
         }
         for col_num, header in enumerate(columns, 1):
-            ws1.column_dimensions[get_column_letter(col_num)].width = widths.get(header, 15)
+            w = widths.get(header, 15)
+            if isinstance(header, str) and header.startswith("Transcript"):
+                w = 70
+            ws1.column_dimensions[get_column_letter(col_num)].width = w
+
+        # Call Insights sheet (audio only) — placed between Transcript and Summary.
+        if call_insights:
+            wsi = wb.create_sheet(title="Call Insights")
+            t = wsi.cell(row=1, column=1, value="CALL INTELLIGENCE REPORT")
+            t.fill = HEADER_FILL
+            t.font = HEADER_FONT
+            t.alignment = Alignment(horizontal="left", vertical="center")
+            wsi.cell(row=1, column=2).fill = HEADER_FILL
+            SECTION_FILL = PatternFill(start_color="D6E4F0", end_color="D6E4F0", fill_type="solid")
+            LABEL_FONT = Font(name="Arial", size=10, bold=True)
+            for idx, (k, v) in enumerate(call_insights, start=3):
+                kc = wsi.cell(row=idx, column=1, value=k)
+                kc.font = LABEL_FONT
+                kc.fill = SECTION_FILL
+                kc.alignment = Alignment(horizontal="left", vertical="top", wrap_text=True)
+                vc = wsi.cell(row=idx, column=2, value=v)
+                vc.font = BODY_FONT
+                vc.alignment = ALIGN_LEFT
+                wsi.row_dimensions[idx].height = 70 if k == "Summary" else (40 if len(str(v)) > 60 else 18)
+            wsi.column_dimensions["A"].width = 24
+            wsi.column_dimensions["B"].width = 95
 
         ws2 = wb.create_sheet(title="Summary")
         for col_num, header in enumerate(summary_headers, 1):
