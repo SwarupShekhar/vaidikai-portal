@@ -2,6 +2,7 @@ import os
 import re
 import json
 import csv
+import html
 import logging
 from datetime import datetime
 
@@ -139,6 +140,72 @@ def parse_time_string(ts_str: str) -> datetime:
             pass
             
     return None
+
+
+def _build_timeline_html(formatted_events: list, breakpoint_index) -> str:
+    """
+    Render the session event timeline as a rich HTML log instead of LS's
+    default chat-bubble Paragraphs view. Step numbers, page transitions,
+    friction in red, drop-off step in amber.
+
+    LS's HyperText element renders this verbatim in the labelling UI.
+    """
+    if not formatted_events:
+        return "<div style='color:#888;font-style:italic;'>No events in this session.</div>"
+
+    rows = [
+        "<div style=\"font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:13px;line-height:1.5;\">"
+    ]
+    for i, ev in enumerate(formatted_events, start=1):
+        is_friction = bool(ev.get("friction"))
+        is_breakpoint = (breakpoint_index is not None and i == breakpoint_index)
+
+        # Strip the "[N]" prefix from action; we render the step number ourselves
+        action_clean = str(ev.get("action") or "")
+        if action_clean.startswith("["):
+            close_idx = action_clean.find("]")
+            if close_idx > 0:
+                action_clean = action_clean[close_idx + 1:].strip()
+        element = str(ev.get("element") or "")
+
+        # Colour palette by row state
+        if is_breakpoint:
+            bg, border, prefix = "#fff3cd", "#ff9800", "🎯"
+            badge_label = "DROP-OFF POINT"
+        elif is_friction:
+            bg, border, prefix = "#ffebee", "#e53935", "⚠"
+            badge_label = ev.get("friction", "Friction")
+        else:
+            bg, border, prefix = "#f5f5f5", "#90a4ae", "•"
+            badge_label = ""
+
+        # Escape user-derived content to avoid breaking the HTML / XSS
+        action_safe  = html.escape(action_clean)
+        element_safe = html.escape(element)
+        badge_safe   = html.escape(badge_label)
+
+        row = (
+            f"<div style=\"display:flex;align-items:flex-start;background:{bg};"
+            f"border-left:4px solid {border};padding:8px 12px;margin:4px 0;"
+            f"border-radius:4px;\">"
+            f"<span style=\"min-width:32px;font-weight:bold;color:#555;"
+            f"text-align:right;margin-right:12px;\">#{i}</span>"
+            f"<span style=\"font-family:'SF Mono',Menlo,Consolas,monospace;"
+            f"font-weight:bold;color:#1565c0;margin-right:10px;\">{action_safe}</span>"
+            f"<span style=\"color:#444;flex:1;\">{element_safe}</span>"
+        )
+        if badge_label:
+            row += (
+                f"<span style=\"background:white;border:1px solid {border};"
+                f"padding:2px 8px;border-radius:12px;font-size:11px;"
+                f"color:{border};font-weight:bold;margin-left:8px;"
+                f"white-space:nowrap;\">{prefix} {badge_safe}</span>"
+            )
+        row += "</div>"
+        rows.append(row)
+
+    rows.append("</div>")
+    return "".join(rows)
 
 
 def analyze_timeline_friction(events: list) -> list:
@@ -406,6 +473,12 @@ def analyze_timeline_friction(events: list) -> list:
                 session_date = cand
                 break
 
+        # Build a rich HTML event log for the LS HyperText view (Option 2)
+        # — replaces the chat-bubble Paragraphs rendering which read like a
+        # dialogue. Step numbers, page transitions, friction in red, drop-off
+        # in amber.
+        timeline_html = _build_timeline_html(formatted_events, breakpoint_index)
+
         result.append({
             "session_id": session_id,
             "event_count": len(raw_events),
@@ -413,6 +486,7 @@ def analyze_timeline_friction(events: list) -> list:
             "user_type": user_type,
             "app_version": app_version,
             "platform": platform,
+            "timeline_html": timeline_html,
             "user_id": user_id,
             "session_date": session_date,
             "friction_signals": friction_list,

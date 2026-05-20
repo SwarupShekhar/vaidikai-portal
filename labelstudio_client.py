@@ -779,20 +779,18 @@ def push_clickstream_to_labelstudio(
                     "value": {"choices": [session.get(fn, default)]},
                 })
 
+            # Drop-off step is now a Choices pick (annotator sees the step number
+            # rendered in the HyperText timeline and selects it). Replaces the
+            # old ParagraphLabels approach which only worked with the chat-bubble
+            # Paragraphs view.
             bp_idx = session.get("breakpoint_index")
-            if bp_idx is not None and bp_idx < len(timeline):
+            if bp_idx is not None and 1 <= bp_idx <= 30:
                 results.append({
                     "id": str(uuid.uuid4())[:8],
-                    "from_name": "breakpoint",
-                    "to_name": "timeline",
-                    "type": "paragraphlabels",
-                    "value": {
-                        "start": str(bp_idx),
-                        "end": str(bp_idx),
-                        "startOffset": 0,
-                        "endOffset": 0,
-                        "paragraphlabels": ["Drop-off Point"]
-                    }
+                    "from_name": "breakpoint_step",
+                    "to_name": "filename",
+                    "type": "choices",
+                    "value": {"choices": [str(bp_idx)]}
                 })
 
             # === User-graph layer (Option D) — surface the user's full arc ===
@@ -820,7 +818,11 @@ def push_clickstream_to_labelstudio(
 
             task_payloads.append({
                 "data": {
+                    # Legacy paragraph timeline — kept only so existing LS tasks
+                    # (pre Option 2) still have data if reopened. New labelling
+                    # config uses clickstream_timeline_html via HyperText.
                     "clickstream_timeline": timeline,
+                    "clickstream_timeline_html": session.get("timeline_html", ""),
                     "filename": original_filename,
                     "client_code": client_code,
                     # Segmentation metadata — needed for the Segments sheet in
