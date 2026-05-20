@@ -92,55 +92,43 @@ def export_and_deliver(
             for pid in project_ids_to_check:
                 try:
                     now = time.time()
-                    export_cache_key = f"export_{ls_url}_{pid}"
                     tasks_cache_key = f"{ls_url}_{pid}"
 
-                    if export_cache_key in _TASK_CACHE and now - _TASK_CACHE[export_cache_key]["time"] < 15:
-                        all_tasks = _TASK_CACHE[export_cache_key]["tasks"]
+                    if tasks_cache_key in _TASK_CACHE and now - _TASK_CACHE[tasks_cache_key]["time"] < 15:
+                        tasks_list = _TASK_CACHE[tasks_cache_key]["tasks"]
                     else:
-                        print(f"Fetching bulk JSON export for project {pid}...")
+                        print(f"Fetching task skeletons for project {pid}...")
                         r = requests.get(
-                            f"{ls_url}/api/projects/{pid}/export?exportType=JSON",
+                            f"{ls_url}/api/tasks",
+                            params={"project": pid, "page_size": 1000},
                             headers=headers,
                             timeout=20
                         )
-                        all_tasks = r.json() if r.status_code == 200 else []
-                        _TASK_CACHE[export_cache_key] = {"tasks": all_tasks, "time": now}
+                        tasks_list = r.json() if r.status_code == 200 else []
+                        if isinstance(tasks_list, dict):
+                            tasks_list = tasks_list.get("tasks", [])
+                        _TASK_CACHE[tasks_cache_key] = {"tasks": tasks_list, "time": now}
 
-                    matched = [
-                        t for t in all_tasks
+                    matched_skeletons = [
+                        t for t in tasks_list
                         if t.get("data", {}).get("client_code") == client_code
                         and t.get("data", {}).get("filename") == original_filename
-                        and len(t.get("annotations", [])) > 0
+                        and (t.get("total_annotations", 0) > 0 or len(t.get("annotations", [])) > 0)
                     ]
-                    if not matched:
-                        # Fallback to /api/tasks to catch unsubmitted/imported pre-annotations
-                        if tasks_cache_key in _TASK_CACHE and now - _TASK_CACHE[tasks_cache_key]["time"] < 15:
-                            tasks_list = _TASK_CACHE[tasks_cache_key]["tasks"]
-                        else:
-                            tr = requests.get(
-                                f"{ls_url}/api/tasks",
-                                params={"project": pid, "page_size": 1000, "expand": "annotations"},
-                                headers=headers,
-                                timeout=20
-                            )
-                            tasks_list = tr.json() if tr.status_code == 200 else []
-                            if isinstance(tasks_list, dict):
-                                tasks_list = tasks_list.get("tasks", [])
-                            _TASK_CACHE[tasks_cache_key] = {"tasks": tasks_list, "time": now}
 
-                        matched = [
-                            t for t in tasks_list
-                            if t.get("data", {}).get("client_code") == client_code
-                            and t.get("data", {}).get("filename") == original_filename
-                            and (t.get("total_annotations", 0) > 0 or len(t.get("annotations", [])) > 0)
-                        ]
+                    if matched_skeletons:
+                        print(f"Found {len(matched_skeletons)} candidate tasks in project {pid}. Fetching full details on-demand...")
+                        matched = []
+                        for skel in matched_skeletons:
+                            tid = skel.get("id")
+                            tr = requests.get(f"{ls_url}/api/tasks/{tid}", headers=headers, timeout=10)
+                            if tr.status_code == 200:
+                                matched.append(tr.json())
                         
-                    if matched:
-                        print(f"Found {len(matched)} candidate tasks in project {pid}")
-                        matched_tasks = matched
-                        project_id = pid
-                        break
+                        if matched:
+                            matched_tasks = matched
+                            project_id = pid
+                            break
                 except Exception as ex:
                     print(f"Error checking project {pid}: {ex}")
 
