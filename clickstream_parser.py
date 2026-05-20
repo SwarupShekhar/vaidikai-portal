@@ -261,6 +261,7 @@ def analyze_timeline_friction(events: list) -> list:
         formatted_events = []
         friction_signals = set()
         page_visit_counts = {}
+        pages_so_far = []
 
         for i, ev in enumerate(raw_events):
             # Parse EVENT_PARAMS JSON blob
@@ -301,6 +302,8 @@ def analyze_timeline_friction(events: list) -> list:
 
             ev_upper = event_name.upper()
             event_friction = []
+
+            pages_so_far.append(page)
 
             # PWA / technical errors
             if "EXCEPTION" in ev_upper or "3IN1_PWA" in ev_upper:
@@ -343,6 +346,70 @@ def analyze_timeline_friction(events: list) -> list:
                 if page_visit_counts[page] >= 3:
                     friction_signals.add("Page Reload Loop")
 
+            # Rage Click Heuristic (multiple clicks/taps on the same target within 2 seconds)
+            is_rage_click = False
+            if i > 0:
+                prev_ev = raw_events[i - 1]
+                def get_prev_field(*keys):
+                    for k in keys:
+                        for ek, ev_val in prev_ev.items():
+                            if str(ek).lower().strip() == k.lower():
+                                return str(ev_val) if ev_val not in (None, "nan", "NA", "") else ""
+                    return ""
+                
+                prev_event_params = {}
+                prev_raw_params = prev_ev.get("EVENT_PARAMS") or prev_ev.get("event_params")
+                if prev_raw_params:
+                    if isinstance(prev_raw_params, dict):
+                        prev_event_params = prev_raw_params
+                    elif isinstance(prev_raw_params, str):
+                        try:
+                            prev_event_params = json.loads(prev_raw_params)
+                        except Exception:
+                            pass
+                def get_prev_param_field(*keys):
+                    for k in keys:
+                        for pk, pv in prev_event_params.items():
+                            if str(pk).lower().strip() == k.lower():
+                                return str(pv) if pv not in (None, "nan", "NA", "") else ""
+                    return ""
+
+                prev_event_name = get_prev_field("EVENTNAME", "eventname", "event_name", "Event Name", "action", "Action", "Event", "event") or "UNKNOWN_EVENT"
+                prev_page = get_prev_param_field("EP_PAGE_NAME", "EP_SCREEN_NAME", "page", "Page Name", "screen", "url", "URL") or get_prev_field("page", "Page", "Page Name", "screen", "Screen", "url", "URL")
+                prev_source = get_prev_param_field("EP_SOURCE", "EP_CTA", "element", "button", "target", "cta", "source") or get_prev_field("element", "Element", "button", "Button", "target", "Target", "cta", "CTA", "source", "Source")
+                if prev_source.startswith("{value:") and prev_source.endswith("}"):
+                    prev_source = prev_source[7:-1]
+
+                is_click = any(k in ev_upper for k in ("CLICK", "TAP", "VIEW")) or event_name.lower() in ("click", "tap")
+                prev_is_click = any(k in prev_event_name.upper() for k in ("CLICK", "TAP", "VIEW")) or prev_event_name.lower() in ("click", "tap")
+
+                if is_click and prev_is_click and page == prev_page and source == prev_source:
+                    t1_str = get_field("timestamp", "date", "DATE")
+                    t0_str = get_prev_field("timestamp", "date", "DATE")
+                    if t1_str and t0_str:
+                        if t1_str == t0_str:
+                            is_rage_click = True
+                        else:
+                            t1_dt = parse_time_string(t1_str)
+                            t0_dt = parse_time_string(t0_str)
+                            if t1_dt and t0_dt and (t1_dt - t0_dt).total_seconds() <= 2.0:
+                                is_rage_click = True
+
+            if is_rage_click:
+                event_friction.append("Rage Click")
+                friction_signals.add("Rage Click")
+                event_name = f"{event_name} (Double Click (Immediate))"
+
+            # Navigation Loop Friction (Page A -> Page B -> Page A -> Page B)
+            if len(pages_so_far) >= 4:
+                p0 = pages_so_far[-4]
+                p1 = pages_so_far[-3]
+                p2 = pages_so_far[-2]
+                p3 = pages_so_far[-1]
+                if p0 == p2 and p1 == p3 and p0 != p1 and p0 != "" and p1 != "":
+                    event_friction.append("Navigation Loop Friction")
+                    friction_signals.add("Navigation Loop Friction")
+
             # Build compact single-line display
             detail_parts = []
             if page:
@@ -357,7 +424,10 @@ def analyze_timeline_friction(events: list) -> list:
             formatted_events.append({
                 "action": f"[{i+1}] {event_name}",
                 "element": "  ".join(detail_parts) if detail_parts else "",
-                "friction": " / ".join(event_friction) if event_friction else ""
+                "friction": " / ".join(event_friction) if event_friction else "",
+                "page": page,
+                "action_raw": event_name,
+                "element_raw": source
             })
 
         # Determine overall session status

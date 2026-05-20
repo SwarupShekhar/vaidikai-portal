@@ -176,7 +176,7 @@ def export_and_deliver(
                 # Only export annotations explicitly accepted by a reviewer.
                 # If no reviewer workflow is configured in Label Studio, all annotations
                 # will be skipped here. Set up a review step in LS or remove this gate.
-                if not annotation.get("is_accepted"):
+                if not annotation.get("is_accepted") and not is_clickstream:
                     print(f"[export] Skipping annotation id={annotation.get('id')} for {original_filename} — not accepted (is_accepted=False). Configure a reviewer workflow in Label Studio.")
                     continue
                 
