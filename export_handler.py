@@ -243,6 +243,12 @@ def export_and_deliver(
                     journey_intent = "Unknown"
                     journey_outcome = "Unknown"
                     root_cause = "None"
+                    # Ami's expanded schema (2026-05-19)
+                    event_class = "Page View"
+                    granular_intent = "Product Exploration — Passive"
+                    journey_stage = "Engagement"
+                    product = "Multi-Product / General"
+                    archetype = "Curious Browser"
 
                     for r_item in result:
                         fn = r_item.get("from_name", "")
@@ -259,15 +265,40 @@ def export_and_deliver(
                             journey_outcome = val.get("choices", [journey_outcome])[0]
                         elif fn == "root_cause":
                             root_cause = val.get("choices", [root_cause])[0]
+                        elif fn == "event_class":
+                            event_class = val.get("choices", [event_class])[0]
+                        elif fn == "granular_intent":
+                            granular_intent = val.get("choices", [granular_intent])[0]
+                        elif fn == "journey_stage":
+                            journey_stage = val.get("choices", [journey_stage])[0]
+                        elif fn == "product":
+                            product = val.get("choices", [product])[0]
+                        elif fn == "archetype":
+                            archetype = val.get("choices", [archetype])[0]
 
+                    # Segmentation metadata carried in task.data (survives even
+                    # if annotators don't touch the new controls).
                     segments.append({
                         "Session File": original_filename,
+                        "Session ID": task_data.get("session_id", ""),
+                        "User Type": task_data.get("user_type", "Unknown"),
+                        "Device": task_data.get("device", "Unknown"),
+                        "Device Cohort": task_data.get("device_cohort", ""),
+                        "App Version": task_data.get("app_version", ""),
+                        "Platform": task_data.get("platform", "Mobile"),
+                        "Events": task_data.get("event_count", 0),
                         "Status": session_status,
                         "Friction Detected": friction_types,
                         "AI Summary": summary_text,
                         "User Intent": journey_intent,
                         "Outcome": journey_outcome,
-                        "Root Cause": root_cause
+                        "Root Cause": root_cause,
+                        # New label dimensions (Ami)
+                        "Event Class": event_class,
+                        "Granular Intent": granular_intent,
+                        "Journey Stage": journey_stage,
+                        "Product": product,
+                        "Archetype": archetype,
                     })
                 elif is_form:
                     extracted_text = ""
@@ -400,6 +431,7 @@ def export_and_deliver(
 
         final_segments = []
         call_insights = None  # populated only for is_audio (GPT-4o Call Insights sheet)
+        clickstream_segments_breakdown = None  # populated only for is_clickstream
         if is_image_project:
             for i, seg in enumerate(segments):
                 seg["Item #"] = i + 1
@@ -455,20 +487,96 @@ def export_and_deliver(
             for i, seg in enumerate(segments):
                 final_segments.append({
                     "Session #": i + 1,
-                    "Session File": seg["Session File"],
+                    "Session ID": seg.get("Session ID", ""),
+                    "User Type": seg.get("User Type", "Unknown"),
+                    "Device": seg.get("Device", "Unknown"),
+                    "App Version": seg.get("App Version", ""),
+                    "Platform": seg.get("Platform", "Mobile"),
+                    "Events": seg.get("Events", 0),
+                    # Ami's expanded label schema
+                    "Event Class": seg.get("Event Class", "Page View"),
+                    "Journey Stage": seg.get("Journey Stage", "Engagement"),
+                    "Product": seg.get("Product", "Multi-Product / General"),
+                    "User Intent": seg["User Intent"],
+                    "Granular Intent": seg.get("Granular Intent", ""),
+                    "Outcome": seg["Outcome"],
                     "Status": seg["Status"],
                     "Friction Detected": seg["Friction Detected"],
+                    "Root Cause": seg["Root Cause"],
+                    "Archetype": seg.get("Archetype", "Curious Browser"),
                     "AI Summary": seg["AI Summary"],
-                    "User Intent": seg["User Intent"],
-                    "Outcome": seg["Outcome"],
-                    "Root Cause": seg["Root Cause"]
+                    "Session File": seg["Session File"],
                 })
-            columns = ["Session #", "Session File", "Status", "Friction Detected", "AI Summary", "User Intent", "Outcome", "Root Cause"]
-            summary_headers = ["Analytics Overview", "Total Count"]
-            summary_values_list = [
-                ["Total Sessions Analyzed", len(segments)],
-                ["Export Date", datetime.now().strftime("%Y-%m-%d %H:%M:%S")]
+            columns = [
+                "Session #", "Session ID", "User Type", "Device", "App Version", "Platform", "Events",
+                "Event Class", "Journey Stage", "Product", "User Intent", "Granular Intent",
+                "Outcome", "Status", "Friction Detected", "Root Cause", "Archetype",
+                "AI Summary", "Session File",
             ]
+            # === Executive KPIs (Summary sheet) ===
+            from collections import Counter as _Counter
+            n_total = len(segments) or 1  # avoid div-by-zero
+            outcome_counts  = _Counter(s["Outcome"] for s in segments)
+            stage_counts    = _Counter(s.get("Journey Stage", "Engagement") for s in segments)
+            product_counts  = _Counter(s.get("Product", "Multi-Product / General") for s in segments)
+            archetype_counts= _Counter(s.get("Archetype", "Curious Browser") for s in segments)
+            usertype_counts = _Counter(s.get("User Type", "Unknown") for s in segments)
+            cohort_counts   = _Counter(s.get("Device Cohort", "") for s in segments)
+            root_counts     = _Counter(s["Root Cause"] for s in segments)
+            friction_flat   = _Counter()
+            for s in segments:
+                for f in str(s.get("Friction Detected", "")).split(","):
+                    f = f.strip()
+                    if f and f.lower() not in ("", "none"):
+                        friction_flat[f] += 1
+
+            def _pct(n):
+                return f"{(n/n_total*100):.1f}%"
+
+            # Drop-off funnel by Journey Stage
+            stage_order = ["Onboarding", "Engagement", "Transaction"]
+            funnel_rows = []
+            cumulative = n_total
+            for st in stage_order:
+                reached = sum(1 for s in segments
+                              if stage_order.index(s.get("Journey Stage", "Engagement")) >= stage_order.index(st))
+                funnel_rows.append([st, reached, _pct(reached)])
+
+            # Build summary headers + value rows (sectioned)
+            summary_headers = ["Metric", "Value", "% of Total"]
+            summary_values_list = []
+            summary_values_list.append(["— OVERVIEW —", "", ""])
+            summary_values_list.append(["Total Sessions Analyzed", n_total, "100.0%"])
+            summary_values_list.append(["Export Date", datetime.now().strftime("%Y-%m-%d %H:%M:%S"), ""])
+            summary_values_list.append(["", "", ""])
+            summary_values_list.append(["— DROP-OFF FUNNEL (by Journey Stage) —", "", ""])
+            for row in funnel_rows:
+                summary_values_list.append(row)
+            summary_values_list.append(["", "", ""])
+            summary_values_list.append(["— JOURNEY OUTCOME —", "", ""])
+            for k, v in outcome_counts.most_common():
+                summary_values_list.append([k, v, _pct(v)])
+            summary_values_list.append(["", "", ""])
+            summary_values_list.append(["— TOP FRICTION SIGNALS —", "", ""])
+            for k, v in friction_flat.most_common(8):
+                summary_values_list.append([k, v, _pct(v)])
+            if not friction_flat:
+                summary_values_list.append(["No friction detected in any session", "", ""])
+            summary_values_list.append(["", "", ""])
+            summary_values_list.append(["— ROOT CAUSE BREAKDOWN —", "", ""])
+            for k, v in root_counts.most_common():
+                summary_values_list.append([k, v, _pct(v)])
+            summary_values_list.append(["", "", ""])
+            summary_values_list.append(["— PRODUCT INTEREST —", "", ""])
+            for k, v in product_counts.most_common():
+                summary_values_list.append([k, v, _pct(v)])
+
+            # Hand off the segmentation breakdown to a dedicated sheet
+            clickstream_segments_breakdown = {
+                "User Type (CleverTap EP_USER_TYPE)": usertype_counts.most_common(),
+                "Device · App-Version Cohort":        cohort_counts.most_common(10),
+                "Behavioural Archetype":              archetype_counts.most_common(),
+            }
         elif is_form:
             for i, seg in enumerate(segments):
                 final_segments.append({
@@ -668,6 +776,42 @@ def export_and_deliver(
                 wsi.row_dimensions[idx].height = 70 if k == "Summary" else (40 if len(str(v)) > 60 else 18)
             wsi.column_dimensions["A"].width = 24
             wsi.column_dimensions["B"].width = 95
+
+        # Segments sheet (clickstream only) — 3 segmentation axes side-by-side
+        # so leadership can see who's hitting friction broken down by User Type,
+        # Device-cohort (release impact), and Behavioural Archetype.
+        if clickstream_segments_breakdown:
+            wseg = wb.create_sheet(title="Segments")
+            SEG_HEADER_FILL = PatternFill(start_color="2E5984", end_color="2E5984", fill_type="solid")
+            SEG_SECTION_FILL = PatternFill(start_color="D6E4F0", end_color="D6E4F0", fill_type="solid")
+            SEG_LABEL_FONT = Font(name="Arial", size=10, bold=True)
+            col_cursor = 1
+            for axis_title, rows in clickstream_segments_breakdown.items():
+                # Section header spanning 2 cols
+                hc = wseg.cell(row=1, column=col_cursor, value=axis_title)
+                hc.fill = SEG_HEADER_FILL
+                hc.font = HEADER_FONT
+                hc.alignment = ALIGN_CENTER
+                wseg.cell(row=1, column=col_cursor + 1).fill = SEG_HEADER_FILL
+                wseg.merge_cells(
+                    start_row=1, start_column=col_cursor,
+                    end_row=1, end_column=col_cursor + 1
+                )
+                # Sub-header
+                sh1 = wseg.cell(row=2, column=col_cursor, value="Segment")
+                sh2 = wseg.cell(row=2, column=col_cursor + 1, value="Count")
+                for c in (sh1, sh2):
+                    c.fill = SEG_SECTION_FILL
+                    c.font = SEG_LABEL_FONT
+                    c.alignment = ALIGN_CENTER
+                # Rows
+                for r_idx, (label, count) in enumerate(rows, start=3):
+                    wseg.cell(row=r_idx, column=col_cursor, value=str(label or "—")).font = BODY_FONT
+                    wseg.cell(row=r_idx, column=col_cursor + 1, value=count).font = BODY_FONT
+                # Column widths
+                wseg.column_dimensions[get_column_letter(col_cursor)].width = 32
+                wseg.column_dimensions[get_column_letter(col_cursor + 1)].width = 10
+                col_cursor += 3  # skip a gap column
 
         ws2 = wb.create_sheet(title="Summary")
         for col_num, header in enumerate(summary_headers, 1):

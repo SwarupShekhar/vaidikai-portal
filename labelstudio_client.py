@@ -758,6 +758,24 @@ def push_clickstream_to_labelstudio(
                 "type": "choices",
                 "value": {"choices": [session.get("root_cause", "No Issue — Smooth")]}
             })
+
+            # Ami's expanded schema (2026-05-19): 4 new pre-annotated dimensions
+            # plus Behavioural Archetype for segmentation.
+            for fn, default in (
+                ("event_class",      "Page View"),
+                ("granular_intent",  "Product Exploration — Passive"),
+                ("journey_stage",    "Engagement"),
+                ("product",          "Multi-Product / General"),
+                ("archetype",        "Curious Browser"),
+            ):
+                results.append({
+                    "id": str(uuid.uuid4())[:8],
+                    "from_name": fn,
+                    "to_name": "filename",
+                    "type": "choices",
+                    "value": {"choices": [session.get(fn, default)]},
+                })
+
             bp_idx = session.get("breakpoint_index")
             if bp_idx is not None and bp_idx < len(timeline):
                 results.append({
@@ -778,7 +796,17 @@ def push_clickstream_to_labelstudio(
                 "data": {
                     "clickstream_timeline": timeline,
                     "filename": original_filename,
-                    "client_code": client_code
+                    "client_code": client_code,
+                    # Segmentation metadata — needed for the Segments sheet in
+                    # the leadership XLSX export. Stays attached to the task
+                    # even if annotators don't touch the new label controls.
+                    "session_id": session_id,
+                    "user_type": user_type,
+                    "device": device,
+                    "device_cohort": session.get("device_cohort", ""),
+                    "app_version": app_version,
+                    "platform": platform,
+                    "event_count": event_count,
                 },
                 "predictions": [{"result": results, "model_version": "gpt-4o-clickstream"}]
             })

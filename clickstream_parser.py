@@ -168,7 +168,26 @@ def analyze_timeline_friction(events: list) -> list:
         device = f"{make} {model}".strip()
         if not device or device.lower() in ("null null", "null"):
             device = "Unknown Device"
-        user_type = str(first.get("EP_USER_TYPE") or "Unknown")
+        # Scan ALL events for a non-empty user type — first-event-only loses
+        # ~38% of sessions because EP_USER_TYPE is intermittently null.
+        user_type = "Unknown"
+        for _ev in raw_events:
+            cand = str(_ev.get("EP_USER_TYPE") or "").strip()
+            if cand and cand.lower() not in ("none", "null", "nan", "na", ""):
+                user_type = cand
+                break
+            # Try nested EVENT_PARAMS too
+            ep = _ev.get("EVENT_PARAMS") or _ev.get("event_params")
+            if isinstance(ep, str):
+                try:
+                    ep = json.loads(ep)
+                except Exception:
+                    ep = {}
+            if isinstance(ep, dict):
+                cand2 = str(ep.get("EP_USER_TYPE") or "").strip()
+                if cand2 and cand2.lower() not in ("none", "null", "nan", "na", ""):
+                    user_type = cand2
+                    break
         app_version = str(first.get("AppVersion") or first.get("CT App Version") or "")
         platform = str(first.get("PLATFORM") or "Mobile")
 
@@ -347,6 +366,23 @@ def analyze_timeline_friction(events: list) -> list:
                 breakpoint_index = idx + 1
                 break
 
+        # === Ami's expanded label schema (May 2026) ===
+        # Derive 4 new dimensions + behavioural archetype from the real
+        # Bajaj Finserv CleverTap event taxonomy.
+        new_dims = _derive_new_dimensions(
+            raw_events=raw_events,
+            ev_upper=ev_names_str,
+            friction_signals=friction_signals,
+            journey_outcome=journey_outcome,
+            event_count=len(raw_events),
+        )
+
+        # Device cohort = Make + AppVersion bucket — for release-impact slicing
+        cohort_version = app_version.split(".")[:3] if app_version else []
+        device_cohort = (
+            f"{make or 'Unknown'} · {'.'.join(cohort_version) if cohort_version else 'No-Ver'}"
+        )
+
         result.append({
             "session_id": session_id,
             "event_count": len(raw_events),
@@ -361,9 +397,149 @@ def analyze_timeline_friction(events: list) -> list:
             "root_cause": root_cause,
             "breakpoint_index": breakpoint_index,
             "events": formatted_events,
+            # New label dimensions (Ami 2026-05-19)
+            "event_class": new_dims["event_class"],
+            "granular_intent": new_dims["granular_intent"],
+            "journey_stage": new_dims["journey_stage"],
+            "product": new_dims["product"],
+            # Segmentation axes
+            "archetype": new_dims["archetype"],
+            "device_cohort": device_cohort,
         })
 
     return result
+
+
+def _derive_new_dimensions(
+    raw_events: list,
+    ev_upper: str,
+    friction_signals: set,
+    journey_outcome: str,
+    event_count: int,
+) -> dict:
+    """
+    Derive 4 new label dimensions (Event class, Granular Intent, Journey-stage,
+    Product) + Behavioural Archetype from the real Bajaj Finserv CleverTap
+    event vocabulary observed in the POC sample.
+
+    All values are pre-annotations — annotators can override in Label Studio.
+    """
+    # ---------- 1. EVENT CLASS — dominant event type for the session ----------
+    bucket_counts = {"App Launch": 0, "Login": 0, "Page View": 0, "CTA Click": 0}
+    for ev in raw_events:
+        nm = str(
+            ev.get("EVENTNAME") or ev.get("eventname")
+            or ev.get("event_name") or ev.get("Event Name") or ""
+        ).upper()
+        if not nm:
+            continue
+        if "APP LAUNCH" in nm or "APP_LAUNCH" in nm or "HOMEPAGE_LOAD" in nm or "APP LAUNCHED" in nm:
+            bucket_counts["App Launch"] += 1
+        elif any(k in nm for k in ("LOGIN", "DEVICE_PERMISSIONS", "CONSENT", "AUTH_INITIATED", "OTP", "REGISTRATION")):
+            bucket_counts["Login"] += 1
+        elif nm.endswith("_CLICKED") or nm.endswith("_TAPPED") or nm.endswith("_SUBMITTED") \
+                or nm.endswith("_INITIATED") or nm.endswith("_CONFIRMATION") or nm.endswith("_DIGITIZED"):
+            bucket_counts["CTA Click"] += 1
+        elif nm.endswith("_VIEWED") or nm.endswith("_LOAD") or "VIEWED" in nm:
+            bucket_counts["Page View"] += 1
+        else:
+            bucket_counts["Page View"] += 1
+    # Pick the dominant bucket; on ties prefer the most "downstream" (CTA > View > Login > Launch)
+    priority = ["CTA Click", "Page View", "Login", "App Launch"]
+    event_class = max(priority, key=lambda c: (bucket_counts[c], -priority.index(c)))
+    if bucket_counts[event_class] == 0:
+        event_class = "App Launch"
+
+    # ---------- 2. GRANULAR INTENT ----------
+    is_repay = any(k in ev_upper for k in (
+        "MAKE_PAYMENT", "PG_PAYMENT", "E-MANDATE", "E_MANDATE", "AUTOPAY",
+        "UPI_REGISTRATION", "REPAYMENT", "REPAY", "MONEY_TRANSFER",
+        "WALLET_PAYMENT", "WALLET_ADD_MONEY", "BBPS", "LOAN_DRAW_DOWN",
+        "LOAN_PAYMENT_CONFIRMATION"
+    ))
+    is_service = any(k in ev_upper for k in (
+        "HELP_SUPPORT", "SUPPORT_", "CONTACT_US", "RAR_", "NPS_",
+        "MY_RELATIONS", "MY_ACCOUNT", "MY_ORDERS", "MY_CART",
+        "EDIT_PROFILE", "STORE_LOCATOR", "DOCUMENT_CENTRE",
+        "PASSBOOK", "LOAN_VIEW_STATEMENTS", "KYC_STATUS"
+    ))
+    n_clicks = sum(1 for ev in raw_events
+                   if "_CLICKED" in str(ev.get("EVENTNAME") or "").upper()
+                   or "_TAPPED" in str(ev.get("EVENTNAME") or "").upper())
+    n_views = sum(1 for ev in raw_events
+                  if "_VIEWED" in str(ev.get("EVENTNAME") or "").upper()
+                  or "_LOAD" in str(ev.get("EVENTNAME") or "").upper())
+
+    if is_repay:
+        granular_intent = "Repayment Intent"
+    elif is_service:
+        granular_intent = "Service Intent"
+    elif n_clicks >= 2:
+        granular_intent = "Product Exploration — Active"
+    else:
+        granular_intent = "Product Exploration — Passive"
+
+    # ---------- 3. JOURNEY STAGE ----------
+    is_txn = any(k in ev_upper for k in (
+        "_SUBMITTED", "PG_PAYMENT", "MAKE_PAYMENT", "PAYMENT_CONFIRMATION",
+        "MONEY_TRANSFER_INITIATED", "LOAN_DRAW_DOWN", "AUTOPAY_INITIATED",
+        "WALLET_PAYMENT_INITIATED", "E-MANDATE_POD", "E_MANDATE_POD_INITIATED",
+        "WALLET_AUTH_INITIATED", "PL_DETAILS_SUBMITTED"
+    ))
+    is_onb = any(k in ev_upper for k in (
+        "APP_LOGIN_INITIATED", "ACCOUNT_LOGIN_INITIATED", "DEVICE_PERMISSIONS",
+        "CONSENT_", "REGISTRATION", "KYC_", "APP LAUNCHED", "APP_LAUNCHED",
+        "WALLET_SETUP_INITIATED"
+    ))
+
+    if is_txn:
+        journey_stage = "Transaction"
+    elif is_onb and event_count <= 6:
+        journey_stage = "Onboarding"
+    else:
+        journey_stage = "Engagement"
+
+    # ---------- 4. PRODUCT ----------
+    # Order matters: more specific prefixes first.
+    if "EMI_CARD" in ev_upper or "EASY_EMI" in ev_upper:
+        product = "EMI-Card"
+    elif "PL_" in ev_upper or "PERSONAL_LOAN" in ev_upper:
+        product = "Personal Loan"
+    elif "LAP_" in ev_upper or "HOME_LOAN" in ev_upper:
+        product = "Home Loan"
+    else:
+        product = "Multi-Product / General"
+
+    # ---------- 5. BEHAVIOURAL ARCHETYPE (segment axis) ----------
+    friction_count = len(friction_signals)
+    has_help = "Help Support Triggered" in friction_signals
+    has_abandon = journey_outcome == "Abandoned Mid-Journey"
+    has_success = journey_outcome == "Successfully Completed"
+
+    if has_abandon and friction_count >= 3:
+        archetype = "Rage Quitter"
+    elif has_help:
+        archetype = "Help-Seeker"
+    elif has_success and friction_count == 0 and is_txn:
+        archetype = "Smooth Completer"
+    elif friction_count == 0 and event_count >= 5 and is_txn:
+        archetype = "Power User"
+    elif 1 <= friction_count <= 2 and not is_txn:
+        archetype = "Confused Novice"
+    elif n_views >= 2 and n_clicks <= 1:
+        archetype = "Curious Browser"
+    elif friction_count == 0:
+        archetype = "Smooth Completer"
+    else:
+        archetype = "Confused Novice"
+
+    return {
+        "event_class": event_class,
+        "granular_intent": granular_intent,
+        "journey_stage": journey_stage,
+        "product": product,
+        "archetype": archetype,
+    }
 
 
 def get_clickstream_simulation_logs(filename: str) -> list:
