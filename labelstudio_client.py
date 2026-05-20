@@ -767,6 +767,9 @@ def push_clickstream_to_labelstudio(
                 ("journey_stage",    "Engagement"),
                 ("product",          "Multi-Product / General"),
                 ("archetype",        "Curious Browser"),
+                # User-graph layer (Option D 2026-05-20): cross-session
+                # archetype derived from the user's full session arc.
+                ("user_archetype",   "Single-Visit Drop"),
             ):
                 results.append({
                     "id": str(uuid.uuid4())[:8],
@@ -792,6 +795,29 @@ def push_clickstream_to_labelstudio(
                     }
                 })
 
+            # === User-graph layer (Option D) — surface the user's full arc ===
+            # Compact text the annotator sees alongside the current session,
+            # rendered into the LS view via the "user_context" data field.
+            other_sessions = session.get("other_sessions_brief", [])
+            user_ctx_lines = [
+                f"User ID (hashed): {session.get('user_id', '—')[:20]}…",
+                f"This is session {session.get('user_session_index', 1)} of {session.get('user_session_count', 1)} for this user.",
+                f"User archetype (derived): {session.get('user_archetype', 'Single-Visit Drop')}",
+                f"Recovery flag: {'YES — failed earlier then succeeded' if session.get('user_recovery_flag') else 'no'}",
+            ]
+            pf = session.get("user_persistent_friction") or []
+            if pf:
+                user_ctx_lines.append(
+                    f"Persistent friction (seen in 2+ sessions): {', '.join(pf)}"
+                )
+            if other_sessions:
+                user_ctx_lines.append("Other sessions for this user:")
+                for line in other_sessions[:12]:
+                    user_ctx_lines.append(f"  • {line}")
+                if len(other_sessions) > 12:
+                    user_ctx_lines.append(f"  …(+{len(other_sessions)-12} more)")
+            user_context_text = "\n".join(user_ctx_lines)
+
             task_payloads.append({
                 "data": {
                     "clickstream_timeline": timeline,
@@ -807,6 +833,14 @@ def push_clickstream_to_labelstudio(
                     "app_version": app_version,
                     "platform": platform,
                     "event_count": event_count,
+                    # User-graph (Option D 2026-05-20) — cross-session context
+                    "user_id": session.get("user_id", ""),
+                    "user_session_count": session.get("user_session_count", 1),
+                    "user_session_index": session.get("user_session_index", 1),
+                    "user_recovery_flag": session.get("user_recovery_flag", False),
+                    "user_persistent_friction": session.get("user_persistent_friction", []),
+                    "user_context": user_context_text,  # rendered in LS view
+                    "session_date": session.get("session_date", ""),
                 },
                 "predictions": [{"result": results, "model_version": "gpt-4o-clickstream"}]
             })

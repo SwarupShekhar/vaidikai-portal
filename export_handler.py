@@ -249,6 +249,8 @@ def export_and_deliver(
                     journey_stage = "Engagement"
                     product = "Multi-Product / General"
                     archetype = "Curious Browser"
+                    # User-graph layer (Option D 2026-05-20)
+                    user_archetype = "Single-Visit Drop"
 
                     for r_item in result:
                         fn = r_item.get("from_name", "")
@@ -275,6 +277,8 @@ def export_and_deliver(
                             product = val.get("choices", [product])[0]
                         elif fn == "archetype":
                             archetype = val.get("choices", [archetype])[0]
+                        elif fn == "user_archetype":
+                            user_archetype = val.get("choices", [user_archetype])[0]
 
                     # Segmentation metadata carried in task.data (survives even
                     # if annotators don't touch the new controls).
@@ -299,6 +303,14 @@ def export_and_deliver(
                         "Journey Stage": journey_stage,
                         "Product": product,
                         "Archetype": archetype,
+                        # User-graph layer (Option D)
+                        "User ID": task_data.get("user_id", ""),
+                        "User Archetype": user_archetype,
+                        "User Session #": task_data.get("user_session_index", 1),
+                        "User Total Sessions": task_data.get("user_session_count", 1),
+                        "User Recovery": "Yes" if task_data.get("user_recovery_flag") else "No",
+                        "User Persistent Friction": ", ".join(task_data.get("user_persistent_friction") or []) or "—",
+                        "Session Date": task_data.get("session_date", ""),
                     })
                 elif is_form:
                     extracted_text = ""
@@ -432,6 +444,7 @@ def export_and_deliver(
         final_segments = []
         call_insights = None  # populated only for is_audio (GPT-4o Call Insights sheet)
         clickstream_segments_breakdown = None  # populated only for is_clickstream
+        clickstream_by_user_rows = None  # populated only for is_clickstream (Option D)
         if is_image_project:
             for i, seg in enumerate(segments):
                 seg["Item #"] = i + 1
@@ -488,12 +501,20 @@ def export_and_deliver(
                 final_segments.append({
                     "Session #": i + 1,
                     "Session ID": seg.get("Session ID", ""),
+                    "Session Date": seg.get("Session Date", ""),
+                    # User-graph identity (Option D) — placed early so leadership
+                    # readers see "who" before "what"
+                    "User ID (hashed)": str(seg.get("User ID", ""))[:24] + ("…" if len(str(seg.get("User ID", ""))) > 24 else ""),
+                    "User Session N/M": f"{seg.get('User Session #', 1)} / {seg.get('User Total Sessions', 1)}",
+                    "User Archetype": seg.get("User Archetype", "Single-Visit Drop"),
+                    "User Recovery": seg.get("User Recovery", "No"),
+                    "Persistent Friction (across user)": seg.get("User Persistent Friction", "—"),
+                    # Session-level dimensions
                     "User Type": seg.get("User Type", "Unknown"),
                     "Device": seg.get("Device", "Unknown"),
                     "App Version": seg.get("App Version", ""),
                     "Platform": seg.get("Platform", "Mobile"),
                     "Events": seg.get("Events", 0),
-                    # Ami's expanded label schema
                     "Event Class": seg.get("Event Class", "Page View"),
                     "Journey Stage": seg.get("Journey Stage", "Engagement"),
                     "Product": seg.get("Product", "Multi-Product / General"),
@@ -503,14 +524,16 @@ def export_and_deliver(
                     "Status": seg["Status"],
                     "Friction Detected": seg["Friction Detected"],
                     "Root Cause": seg["Root Cause"],
-                    "Archetype": seg.get("Archetype", "Curious Browser"),
+                    "Archetype (session)": seg.get("Archetype", "Curious Browser"),
                     "AI Summary": seg["AI Summary"],
                     "Session File": seg["Session File"],
                 })
             columns = [
-                "Session #", "Session ID", "User Type", "Device", "App Version", "Platform", "Events",
+                "Session #", "Session ID", "Session Date",
+                "User ID (hashed)", "User Session N/M", "User Archetype", "User Recovery", "Persistent Friction (across user)",
+                "User Type", "Device", "App Version", "Platform", "Events",
                 "Event Class", "Journey Stage", "Product", "User Intent", "Granular Intent",
-                "Outcome", "Status", "Friction Detected", "Root Cause", "Archetype",
+                "Outcome", "Status", "Friction Detected", "Root Cause", "Archetype (session)",
                 "AI Summary", "Session File",
             ]
             # === Executive KPIs (Summary sheet) ===
@@ -571,12 +594,102 @@ def export_and_deliver(
             for k, v in product_counts.most_common():
                 summary_values_list.append([k, v, _pct(v)])
 
+            # === USER-LEVEL aggregations (Option D) ===
+            # Collapse sessions to one row per unique hashed phone.
+            users_map = {}  # uid -> {sessions: [seg], archetype, recovery, persistent}
+            for s in segments:
+                uid = s.get("User ID") or s.get("Session ID")
+                if uid not in users_map:
+                    users_map[uid] = {"sessions": [], "user_id": uid}
+                users_map[uid]["sessions"].append(s)
+                # User-level fields are constant across a user's sessions —
+                # take from any session (latest wins on ties).
+                users_map[uid]["user_archetype"] = s.get("User Archetype", "Single-Visit Drop")
+                users_map[uid]["recovery"] = s.get("User Recovery", "No")
+                users_map[uid]["persistent_friction"] = s.get("User Persistent Friction", "—")
+                users_map[uid]["user_type"] = s.get("User Type", "Unknown")
+                users_map[uid]["device"] = s.get("Device", "Unknown")
+
+            n_users = len(users_map) or 1
+            user_archetype_counts = _Counter(u["user_archetype"] for u in users_map.values())
+            recovery_users = sum(1 for u in users_map.values() if u["recovery"] == "Yes")
+            persistent_friction_users = sum(1 for u in users_map.values()
+                                             if u["persistent_friction"] not in ("", "—", None))
+            multi_session_users = sum(1 for u in users_map.values() if len(u["sessions"]) > 1)
+
+            # User-level funnel — % of UNIQUE users who ever reached each stage
+            user_max_stage = {}
+            for uid, u in users_map.items():
+                cur = -1
+                for s in u["sessions"]:
+                    try:
+                        idx = stage_order.index(s.get("Journey Stage", "Engagement"))
+                        if idx > cur:
+                            cur = idx
+                    except ValueError:
+                        pass
+                user_max_stage[uid] = cur
+            user_funnel_rows = []
+            for i, st in enumerate(stage_order):
+                reached = sum(1 for v in user_max_stage.values() if v >= i)
+                user_funnel_rows.append([st, reached, f"{reached/n_users*100:.1f}%"])
+
+            # Inject user-level KPIs into the Summary sheet at the top
+            user_kpi_block = [
+                ["", "", ""],
+                ["— USER-LEVEL VIEW (Option D: hashed-phone aggregation) —", "", ""],
+                ["Unique Users Analysed", n_users, f"{n_users}/{n_total} sessions"],
+                ["Users with Multiple Sessions", multi_session_users, f"{multi_session_users/n_users*100:.1f}%"],
+                ["Recovery Rate (failed→succeeded)", recovery_users, f"{recovery_users/n_users*100:.1f}%"],
+                ["Users with Persistent Friction (2+ sessions)", persistent_friction_users, f"{persistent_friction_users/n_users*100:.1f}%"],
+                ["", "", ""],
+                ["— USER-LEVEL FUNNEL (% of unique users who ever reached) —", "", ""],
+            ]
+            user_kpi_block.extend(user_funnel_rows)
+            user_kpi_block.append(["", "", ""])
+            user_kpi_block.append(["— USER ARCHETYPE DISTRIBUTION —", "", ""])
+            for k, v in user_archetype_counts.most_common():
+                user_kpi_block.append([k, v, f"{v/n_users*100:.1f}%"])
+            # Append KPI block to summary_values_list
+            summary_values_list.extend(user_kpi_block)
+
             # Hand off the segmentation breakdown to a dedicated sheet
             clickstream_segments_breakdown = {
                 "User Type (CleverTap EP_USER_TYPE)": usertype_counts.most_common(),
                 "Device · App-Version Cohort":        cohort_counts.most_common(10),
-                "Behavioural Archetype":              archetype_counts.most_common(),
+                "Behavioural Archetype (session)":    archetype_counts.most_common(),
+                "User Archetype (cross-session)":     user_archetype_counts.most_common(),
             }
+
+            # Build the "By User" sheet payload — one row per unique hashed phone.
+            clickstream_by_user_rows = []
+            outcome_short = {
+                "Successfully Completed":   "✓ Done",
+                "Abandoned Mid-Journey":    "✗ Abandoned",
+                "Blocked by Error":         "✗ Error",
+                "Deflected to Support":     "→ Support",
+                "Browsing / Inconclusive":  "… Browsing",
+            }
+            # Sort users by total sessions desc — most-active users first
+            sorted_users = sorted(users_map.items(),
+                                  key=lambda kv: -len(kv[1]["sessions"]))
+            for uid, u in sorted_users:
+                user_sessions_ordered = sorted(u["sessions"],
+                                                key=lambda s: int(s.get("User Session #", 1)))
+                arc = " → ".join(
+                    outcome_short.get(s["Outcome"], s["Outcome"][:10])
+                    for s in user_sessions_ordered
+                )
+                clickstream_by_user_rows.append({
+                    "User ID (hashed)": str(uid)[:32] + ("…" if len(str(uid)) > 32 else ""),
+                    "Total Sessions": len(u["sessions"]),
+                    "User Archetype": u["user_archetype"],
+                    "Recovery": u["recovery"],
+                    "Persistent Friction": u["persistent_friction"],
+                    "User Type": u["user_type"],
+                    "Device": u["device"],
+                    "Session Arc (chronological)": arc,
+                })
         elif is_form:
             for i, seg in enumerate(segments):
                 final_segments.append({
@@ -812,6 +925,34 @@ def export_and_deliver(
                 wseg.column_dimensions[get_column_letter(col_cursor)].width = 32
                 wseg.column_dimensions[get_column_letter(col_cursor + 1)].width = 10
                 col_cursor += 3  # skip a gap column
+
+        # By User sheet (clickstream only) — one row per unique hashed phone,
+        # with the full session arc, archetype, recovery flag, and persistent
+        # friction signal. This is the headline artefact for leadership: it
+        # answers "which users are struggling" not just "which sessions failed".
+        if clickstream_by_user_rows:
+            wsu = wb.create_sheet(title="By User")
+            user_cols = ["User ID (hashed)", "Total Sessions", "User Archetype",
+                         "Recovery", "Persistent Friction", "User Type", "Device",
+                         "Session Arc (chronological)"]
+            for col_num, header in enumerate(user_cols, 1):
+                c = wsu.cell(row=1, column=col_num, value=header)
+                c.fill = HEADER_FILL
+                c.font = HEADER_FONT
+                c.alignment = ALIGN_CENTER
+            for row_num, urow in enumerate(clickstream_by_user_rows, 2):
+                is_alt = row_num % 2 != 0
+                for col_num, key in enumerate(user_cols, 1):
+                    c = wsu.cell(row=row_num, column=col_num, value=urow.get(key, ""))
+                    c.font = BODY_FONT
+                    c.alignment = ALIGN_LEFT
+                    if is_alt:
+                        c.fill = ALTERNATE_FILL
+            user_widths = {"User ID (hashed)": 36, "Total Sessions": 14, "User Archetype": 22,
+                           "Recovery": 10, "Persistent Friction": 30, "User Type": 12,
+                           "Device": 28, "Session Arc (chronological)": 80}
+            for col_num, header in enumerate(user_cols, 1):
+                wsu.column_dimensions[get_column_letter(col_num)].width = user_widths.get(header, 18)
 
         ws2 = wb.create_sheet(title="Summary")
         for col_num, header in enumerate(summary_headers, 1):

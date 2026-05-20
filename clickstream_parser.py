@@ -383,6 +383,29 @@ def analyze_timeline_friction(events: list) -> list:
             f"{make or 'Unknown'} · {'.'.join(cohort_version) if cohort_version else 'No-Ver'}"
         )
 
+        # === User-graph layer (Ami's "understand segments" ask) ===
+        # PROFILE_PHONE is already hashed at source — we never decode it,
+        # we just group by the hash to correlate sessions of the same user.
+        user_id = ""
+        for _ev in raw_events:
+            cand = str(_ev.get("PROFILE_PHONE") or "").strip()
+            if cand and cand.lower() not in ("none", "null", "nan", "na", ""):
+                user_id = cand
+                break
+        # Fallback for anonymous sessions (pre-login): bucket each one
+        # under its own pseudo-user so they don't collapse into a single
+        # "Anonymous" mega-user.
+        if not user_id:
+            user_id = f"ANON-{session_id}"
+
+        # Earliest date for chronological ordering across the user's sessions
+        session_date = ""
+        for _ev in raw_events:
+            cand = str(_ev.get("DATE") or "").strip()
+            if cand and cand.lower() not in ("none", "null", "nan", "na", ""):
+                session_date = cand
+                break
+
         result.append({
             "session_id": session_id,
             "event_count": len(raw_events),
@@ -390,6 +413,8 @@ def analyze_timeline_friction(events: list) -> list:
             "user_type": user_type,
             "app_version": app_version,
             "platform": platform,
+            "user_id": user_id,
+            "session_date": session_date,
             "friction_signals": friction_list,
             "session_status": session_status,
             "journey_intent": journey_intent,
@@ -407,7 +432,109 @@ def analyze_timeline_friction(events: list) -> list:
             "device_cohort": device_cohort,
         })
 
+    # Attach user-graph layer: groups sessions by hashed phone, derives
+    # cross-session user archetype + recovery + persistent friction signal.
+    _attach_user_graph(result)
+
     return result
+
+
+def _attach_user_graph(sessions: list) -> None:
+    """
+    Mutates `sessions` in-place to attach user-level fields:
+        user_archetype, user_session_count, user_session_index,
+        recovery_flag, persistent_friction, other_sessions_brief.
+
+    The hashed phone (already privacy-safe at source) is the grouping key.
+    Sessions for the same user are ordered by session_date; user-level
+    signals are derived from the sequence of session outcomes.
+    """
+    from collections import defaultdict
+
+    # 1) Group sessions by user_id
+    by_user = defaultdict(list)
+    for s in sessions:
+        by_user[s["user_id"]].append(s)
+
+    # 2) For each user, sort chronologically + derive user-level signals
+    for uid, user_sessions in by_user.items():
+        # Sort by session_date (string-sortable for the Bajaj sample's
+        # YYYY-MM-DD format; falls back to original order if absent).
+        user_sessions.sort(key=lambda x: (x.get("session_date") or "", x["session_id"]))
+
+        n = len(user_sessions)
+        outcomes = [s["journey_outcome"] for s in user_sessions]
+        friction_lists = [set(s.get("friction_signals", [])) for s in user_sessions]
+
+        # Recovery = any "Successfully Completed" session followed any
+        # non-success session for the same user.
+        non_success_before = False
+        recovery_flag = False
+        for o in outcomes:
+            if o == "Successfully Completed" and non_success_before:
+                recovery_flag = True
+                break
+            if o != "Successfully Completed":
+                non_success_before = True
+
+        # Persistent friction = same friction signal appears in 2+ sessions
+        from collections import Counter as _C
+        friction_freq = _C()
+        for fs in friction_lists:
+            for f in fs:
+                friction_freq[f] += 1
+        persistent_friction = sorted(
+            [f for f, c in friction_freq.items() if c >= 2]
+        )
+
+        # User archetype derivation
+        success_count   = sum(1 for o in outcomes if o == "Successfully Completed")
+        abandon_count   = sum(1 for o in outcomes if o == "Abandoned Mid-Journey")
+        blocked_count   = sum(1 for o in outcomes if o == "Blocked by Error")
+        deflected_count = sum(1 for o in outcomes if o == "Deflected to Support")
+        bad_outcome     = abandon_count + blocked_count + deflected_count
+
+        if n == 1:
+            user_archetype = "Single-Visit Drop"
+        elif recovery_flag:
+            user_archetype = "Recoverer"
+        elif success_count >= 2:
+            user_archetype = "Power User"
+        elif n >= 3 and bad_outcome == n and success_count == 0:
+            user_archetype = "Persistent Struggler"
+        elif n >= 2 and bad_outcome == n and success_count == 0:
+            user_archetype = "Lost Cause"
+        else:
+            user_archetype = "Explorer"
+
+        # Build compact "other sessions" brief so annotators can see the
+        # user's full arc without leaving the current session task.
+        outcome_short = {
+            "Successfully Completed":   "✓ Done",
+            "Abandoned Mid-Journey":    "✗ Abandoned",
+            "Blocked by Error":         "✗ Error",
+            "Deflected to Support":     "→ Support",
+            "Browsing / Inconclusive":  "… Browsing",
+        }
+        sessions_brief = []
+        for s in user_sessions:
+            sessions_brief.append(
+                f"S{user_sessions.index(s)+1} ({s.get('session_date') or '—'}): "
+                f"{outcome_short.get(s['journey_outcome'], s['journey_outcome'])} "
+                f"[{s['product']}/{s['journey_stage']}]"
+            )
+
+        # Mutate each session with its user-level fields
+        for idx, s in enumerate(user_sessions, start=1):
+            s["user_archetype"] = user_archetype
+            s["user_session_count"] = n
+            s["user_session_index"] = idx
+            s["user_recovery_flag"] = recovery_flag
+            s["user_persistent_friction"] = persistent_friction
+            # Exclude the current session from its own "other sessions" view
+            s["other_sessions_brief"] = [
+                b for j, b in enumerate(sessions_brief) if j + 1 != idx
+            ]
 
 
 def _derive_new_dimensions(
