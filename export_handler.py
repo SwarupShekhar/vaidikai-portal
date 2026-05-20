@@ -43,7 +43,10 @@ def _get_ls_headers() -> dict:
         except Exception as e:
             print(f"Token refresh failed, using as-is: {e}")
             
-    return {"Authorization": f"Bearer {api_key}"}
+    if api_key.startswith("eyJ"):
+        return {"Authorization": f"Bearer {api_key}"}
+    else:
+        return {"Authorization": f"Token {api_key}"}
 
 def export_and_deliver(
     client_code: str,
