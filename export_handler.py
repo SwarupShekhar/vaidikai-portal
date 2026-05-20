@@ -240,6 +240,7 @@ def export_and_deliver(
                     session_status = "Smooth Journey"
                     friction_types = "None"
                     summary_text = ""
+                    story_gist_text = ""
                     journey_intent = "Unknown"
                     journey_outcome = "Unknown"
                     root_cause = "None"
@@ -261,6 +262,8 @@ def export_and_deliver(
                             friction_types = ", ".join(val.get("choices", ["None"]))
                         elif fn == "summary":
                             summary_text = val.get("text", [""])[0]
+                        elif fn == "story_gist":
+                            story_gist_text = val.get("text", [""])[0]
                         elif fn == "journey_intent":
                             journey_intent = val.get("choices", [journey_intent])[0]
                         elif fn == "journey_outcome":
@@ -294,6 +297,7 @@ def export_and_deliver(
                         "Status": session_status,
                         "Friction Detected": friction_types,
                         "AI Summary": summary_text,
+                        "Story Gist": story_gist_text or task_data.get("story_gist", ""),
                         "User Intent": journey_intent,
                         "Outcome": journey_outcome,
                         "Root Cause": root_cause,
@@ -526,6 +530,7 @@ def export_and_deliver(
                     "Root Cause": seg["Root Cause"],
                     "Archetype (session)": seg.get("Archetype", "Curious Browser"),
                     "AI Summary": seg["AI Summary"],
+                    "Story Gist": seg.get("Story Gist", ""),
                     "Session File": seg["Session File"],
                 })
             columns = [
@@ -534,7 +539,7 @@ def export_and_deliver(
                 "User Type", "Device", "App Version", "Platform", "Events",
                 "Event Class", "Journey Stage", "Product", "User Intent", "Granular Intent",
                 "Outcome", "Status", "Friction Detected", "Root Cause", "Archetype (session)",
-                "AI Summary", "Session File",
+                "AI Summary", "Story Gist", "Session File",
             ]
             # === Executive KPIs (Summary sheet) ===
             from collections import Counter as _Counter
@@ -860,7 +865,8 @@ def export_and_deliver(
         widths = {
             "Item #": 10, "Category": 20, "Geometry Type": 15, "Points Count": 12, "Annotator": 20, "Image File": 30,
             "Segment #": 10, "Speaker": 15, "Start Time (s)": 15, "End Time (s)": 15, "Duration (s)": 15, "Transcript": 60,
-            "Intent": 20, "Sentiment": 14, "Outcome": 24, "Language": 12, "Audio File": 30
+            "Intent": 20, "Sentiment": 14, "Outcome": 24, "Language": 12, "Audio File": 30,
+            "AI Summary": 50, "Story Gist": 60
         }
         for col_num, header in enumerate(columns, 1):
             w = widths.get(header, 15)

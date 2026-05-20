@@ -723,7 +723,7 @@ def push_clickstream_to_labelstudio(
                     "type": "choices",
                     "value": {"choices": friction_signals}
                 })
-            ai_note = (
+            ai_note = session.get("narrative_summary") or (
                 f"AI Pre-analysis: {', '.join(friction_signals)} ({event_count} events)."
                 if friction_signals
                 else f"Smooth session — {event_count} events, no friction detected."
@@ -734,6 +734,14 @@ def push_clickstream_to_labelstudio(
                 "to_name": "filename",
                 "type": "textarea",
                 "value": {"text": [ai_note]}
+            })
+            story_gist_note = session.get("story_gist") or "No story gist generated."
+            results.append({
+                "id": str(uuid.uuid4())[:8],
+                "from_name": "story_gist",
+                "to_name": "filename",
+                "type": "textarea",
+                "value": {"text": [story_gist_note]}
             })
 
             # ML training schema: Journey Intent, Outcome, Root Cause, Drop-off Breakpoint
@@ -843,6 +851,7 @@ def push_clickstream_to_labelstudio(
                     "user_persistent_friction": session.get("user_persistent_friction", []),
                     "user_context": user_context_text,  # rendered in LS view
                     "session_date": session.get("session_date", ""),
+                    "story_gist": session.get("story_gist", ""),
                 },
                 "predictions": [{"result": results, "model_version": "gpt-4o-clickstream"}]
             })

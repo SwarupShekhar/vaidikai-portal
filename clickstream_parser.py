@@ -609,6 +609,184 @@ def _attach_user_graph(sessions: list) -> None:
             s["other_sessions_brief"] = [
                 b for j, b in enumerate(sessions_brief) if j + 1 != idx
             ]
+            s["narrative_summary"] = _generate_narrative_summary(s)
+            s["story_gist"] = _generate_story_gist(s)
+
+
+def _generate_narrative_summary(s: dict) -> str:
+    """
+    Generates a structured, easy-to-read human-style step-by-step story/gist
+    of what happened during the session.
+    """
+    uid = s.get("user_id", "")
+    idx = s.get("user_session_index", 1)
+    tot = s.get("user_session_count", 1)
+    arch = s.get("user_archetype", "Explorer")
+    prod = s.get("product", "General")
+    intent = s.get("journey_intent", "Unknown")
+    stage = s.get("journey_stage", "Engagement")
+    outcome = s.get("journey_outcome", "Browsing")
+    cause = s.get("root_cause", "No Issue")
+    events = s.get("events") or []
+    bp = s.get("breakpoint_index")
+    frictions = s.get("friction_signals") or []
+
+    # Part 1: Context/History
+    if "ANON-" in uid:
+        part1 = f"Anonymous user initiated {prod} exploration."
+    else:
+        part1 = f"User (hashed {uid[:8]}...)—a '{arch}'—started session {idx} of {tot} for {prod}."
+
+    # Part 2: Actions & Friction
+    if frictions:
+        fric_desc = ", ".join(frictions)
+        if bp and 1 <= bp <= len(events):
+            action_name = events[bp-1].get("action", "")
+            if action_name.startswith("["):
+                close_idx = action_name.find("]")
+                if close_idx > 0:
+                    action_name = action_name[close_idx+1:].strip()
+            part2 = f"Flow stalled at Step {bp} on '{action_name}' due to {fric_desc}."
+        else:
+            part2 = f"Encountered friction ({fric_desc}) during navigation."
+            
+        if "Page Reload Loop" in frictions:
+            part2 += " This triggered repeated page reload loops as the user attempted to resolve the issue."
+    else:
+        part2 = "The session timeline was completely smooth with no technical friction or bugs."
+
+    # Part 3: Outcome
+    if outcome == "Successfully Completed":
+        part3 = "The user successfully completed their transaction/goal."
+    elif outcome == "Blocked by Error":
+        part3 = f"The user was completely blocked by the technical bug and had to abandon the session."
+    elif outcome == "Abandoned Mid-Journey":
+        part3 = "The user abandoned the journey mid-way."
+    elif outcome == "Deflected to Support":
+        part3 = "The user was deflected to Help & Support seeking assistance."
+    else:
+        part3 = "The session was inconclusive (pure browsing)."
+
+    # Structure as a short step-by-step story
+    lines = [
+        f"1. Context: {part1}",
+        f"2. Goal: Navigating {intent} in {stage} stage.",
+        f"3. Timeline Gist: {len(events)} events. {part2}",
+        f"4. Result: {part3} (Outcome: {outcome} | Root Cause: {cause})"
+    ]
+    return "\n".join(lines)
+
+
+def _generate_story_gist(s: dict) -> str:
+    """
+    Generates a concise, highly readable, step-by-step chronological story of the user session.
+    Consolidates repeated screen visits and highlights exact friction points.
+    """
+    events = s.get("events") or []
+    if not events:
+        return "No events in this session."
+
+    story_lines = []
+    
+    # 1. Parse actions into logical steps
+    parsed_steps = []
+    for idx, ev in enumerate(events):
+        action = ev.get("action") or ""
+        element = ev.get("element") or ""
+        friction = ev.get("friction") or ""
+        
+        # Clean prefix like "[1] " from action
+        if action.startswith("["):
+            close_idx = action.find("]")
+            if close_idx > 0:
+                action = action[close_idx+1:].strip()
+                
+        # Clean double spaces/delimiters from element details
+        clean_elem = element.strip()
+        # If there are '>>' indicating friction in element, split it out
+        if ">>" in clean_elem:
+            clean_elem = clean_elem.split(">>")[0].strip()
+            
+        parsed_steps.append({
+            "num": idx + 1,
+            "action": action,
+            "element": clean_elem,
+            "friction": friction
+        })
+
+    # 2. Sequential de-duplication to avoid repetitive steps (e.g. repeated reloads, multiple consecutive same views)
+    consolidated = []
+    prev_key = None
+    repeat_count = 1
+    
+    for ps in parsed_steps:
+        # We group by action + element (ignoring differences in step number)
+        # However, if there is friction, we never group it — friction must be highlighted explicitly!
+        key = (ps["action"], ps["element"])
+        if ps["friction"]:
+            if prev_key:
+                consolidated.append((prev_key[0], prev_key[1], repeat_count, ""))
+                prev_key = None
+                repeat_count = 1
+            consolidated.append((ps["action"], ps["element"], 1, ps["friction"]))
+        else:
+            if key == prev_key:
+                repeat_count += 1
+            else:
+                if prev_key:
+                    consolidated.append((prev_key[0], prev_key[1], repeat_count, ""))
+                prev_key = key
+                repeat_count = 1
+                
+    if prev_key:
+        consolidated.append((prev_key[0], prev_key[1], repeat_count, ""))
+
+    # 3. Format as a story
+    step_num = 1
+    for act, elem, count, fric in consolidated:
+        # Convert action name to readable title case
+        act_clean = act.replace("_", " ").title()
+        
+        # Build description
+        if elem:
+            # E.g. "Viewed Homepage <- HOMESCREEN_LANDING" -> "Viewed Homepage"
+            if "<-" in elem:
+                screen_detail = elem.split("<-")[0].strip()
+                # Clean up screen name if it contains bracketed sections
+                if "[" in screen_detail:
+                    screen_detail = screen_detail.split("[")[0].strip()
+                desc = f"{act_clean} on '{screen_detail}'"
+            else:
+                desc = f"{act_clean} on '{elem}'"
+        else:
+            desc = act_clean
+            
+        if count > 1:
+            desc += f" ({count} times)"
+            
+        if fric:
+            desc += f" ── ⚠️ Encountered {fric}!"
+            
+        story_lines.append(f"{step_num}. {desc}")
+        step_num += 1
+
+    # 4. Final outcome step
+    outcome = s.get("journey_outcome", "Browsing")
+    if outcome == "Successfully Completed":
+        outcome_story = "Journey ended with successful completion of the goal."
+    elif outcome == "Blocked by Error":
+        outcome_story = f"Journey cut short and blocked by technical issue ({s.get('root_cause', 'Error')})."
+    elif outcome == "Abandoned Mid-Journey":
+        outcome_story = "Journey was abandoned by the user mid-way."
+    elif outcome == "Deflected to Support":
+        outcome_story = "User was deflected to Help & Support."
+    else:
+        outcome_story = "Journey ended after browsing."
+        
+    story_lines.append(f"{step_num}. Outcome: {outcome_story}")
+    
+    return "\n".join(story_lines)
+
 
 
 def _derive_new_dimensions(
